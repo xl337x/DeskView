@@ -55,7 +55,7 @@ public static class DialogAnswerer {
 # the clipboard can be held for a moment by other programs (the engine syncs it): retry reads
 # a locked screen denies every program the clipboard: skip those checks then (they pass on an unlocked desktop)
 $script:clipOk = $true; try { [Windows.Forms.Clipboard]::SetText('probe') } catch { $script:clipOk = $false; 'SKIP  clipboard checks: the clipboard is not available (screen locked?)' }
-function Clip { for ($i = 0; $i -lt 20; $i++) { try { return (Clip) } catch { Start-Sleep -Milliseconds 100 } }; '' }
+function Clip { for ($i = 0; $i -lt 20; $i++) { try { return [Windows.Forms.Clipboard]::GetText() } catch { Start-Sleep -Milliseconds 100 } }; '' }
 function All-Controls($c) { foreach ($x in $c.Controls) { $x; All-Controls $x } }
 function Shot($form, $name) { $bmp = New-Object Drawing.Bitmap $form.Width, $form.Height; $form.DrawToBitmap($bmp, (New-Object Drawing.Rectangle 0, 0, $form.Width, $form.Height)); $bmp.Save((Join-Path $shots "$name.png")); $bmp.Dispose() }
 function Settings { (New-Object Web.Script.Serialization.JavaScriptSerializer).DeserializeObject([IO.File]::ReadAllText((Join-Path $home2 'app.json'))) }

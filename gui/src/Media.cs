@@ -14,6 +14,8 @@ namespace DeskView
 {
     public static class Tools
     {
+        public static string OppositeSide(string side) => side == "left" ? "right" : side == "right" ? "left" : side == "top" ? "bottom" : side == "bottom" ? "top" : "";
+
         public static string Find(string name)
         {
             var local = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffmpeg", name + ".exe");

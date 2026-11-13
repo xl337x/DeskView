@@ -52,9 +52,121 @@ static class DvNative
     [DllImport("user32.dll")] public static extern IntPtr CallNextHookEx(IntPtr h, int c, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
     [DllImport("kernel32.dll")] public static extern IntPtr GetModuleHandle(string n);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
+    [DllImport("user32.dll")] public static extern IntPtr CreateCursor(IntPtr inst, int x, int y, int w, int h, byte[] and, byte[] xor);
 
     public static readonly IntPtr PerMonitorV2 = new IntPtr(-4);
     public static readonly IntPtr AgentMarker = new IntPtr(0x44564147);   // 'DVAG': input replayed by the agent
+}
+
+/// <summary>Screen-edge geometry for switching computers (physical pixels).</summary>
+public static class DvEdge
+{
+    public static string Opposite(string side)
+    {
+        switch (side) { case "left": return "right"; case "right": return "left"; case "top": return "bottom"; case "bottom": return "top"; }
+        return "";
+    }
+
+    /// <summary>The whole desktop (all monitors) in physical pixels.</summary>
+    public static System.Drawing.Rectangle Desktop()
+    {
+        var prev = DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
+        try { return new System.Drawing.Rectangle(DvNative.GetSystemMetrics(76), DvNative.GetSystemMetrics(77), DvNative.GetSystemMetrics(78), DvNative.GetSystemMetrics(79)); }
+        finally { if (prev != IntPtr.Zero) DvNative.SetThreadDpiAwarenessContext(prev); }
+    }
+
+    static bool Vertical(string side) { return side == "left" || side == "right"; }
+    static int Norm(int v, int size) { return Math.Max(0, Math.Min(65535, (int)Math.Round(v * 65535.0 / Math.Max(1, size - 1)))); }
+
+    /// <summary>Is the pointer touching this side of the desktop?</summary>
+    public static bool AtEdge(string side, int x, int y, System.Drawing.Rectangle d)
+    {
+        switch (side) { case "left": return x <= d.Left; case "right": return x >= d.Right - 1; case "top": return y <= d.Top; case "bottom": return y >= d.Bottom - 1; }
+        return false;
+    }
+
+    /// <summary>Would this position be past this side of the desktop?</summary>
+    public static bool Beyond(string side, int x, int y, System.Drawing.Rectangle d)
+    {
+        switch (side) { case "left": return x < d.Left; case "right": return x > d.Right - 1; case "top": return y < d.Top; case "bottom": return y > d.Bottom - 1; }
+        return false;
+    }
+
+    /// <summary>Where along the side the point is, 0..65535 (top to bottom, or left to right).</summary>
+    public static int Along(string side, int x, int y, System.Drawing.Rectangle d)
+    {
+        return Vertical(side) ? Norm(y - d.Top, d.Height) : Norm(x - d.Left, d.Width);
+    }
+
+    /// <summary>The point just inside this side of the desktop at 'along' (0..65535).</summary>
+    public static System.Drawing.Point Place(string side, int along, System.Drawing.Rectangle d, int inset)
+    {
+        int ax = d.Left + (int)Math.Round(along * (d.Width - 1) / 65535.0), ay = d.Top + (int)Math.Round(along * (d.Height - 1) / 65535.0);
+        switch (side)
+        {
+            case "left": return new System.Drawing.Point(d.Left + inset, ay);
+            case "right": return new System.Drawing.Point(d.Right - 1 - inset, ay);
+            case "top": return new System.Drawing.Point(ax, d.Top + inset);
+            default: return new System.Drawing.Point(ax, d.Bottom - 1 - inset);
+        }
+    }
+}
+
+/// <summary>Clipboard text on its own STA thread (the clipboard needs one), with retries; never throws.</summary>
+public static class DvClip
+{
+    public const int ChunkChars = 40000;
+    static BlockingCollection<Action> work = new BlockingCollection<Action>();
+    static Thread thread;
+    static readonly object startLock = new object();
+
+    static DateTime busySince = DateTime.MaxValue;   // when the current job started (a stuck job => new worker)
+
+    static void Run(Action a)
+    {
+        lock (startLock)
+        {
+            if (thread != null && (DateTime.UtcNow - busySince).TotalSeconds > 5)
+            {
+                // the worker is stuck inside the clipboard (another program does not answer): start a fresh one
+                work.CompleteAdding(); work = new BlockingCollection<Action>(); thread = null;
+            }
+            if (thread == null)
+            {
+                var q = work;
+                thread = new Thread(() => { foreach (var w in q.GetConsumingEnumerable()) { busySince = DateTime.UtcNow; try { w(); } catch { } busySince = DateTime.MaxValue; } }) { IsBackground = true, Name = "DeskViewClipboard" };
+                thread.SetApartmentState(ApartmentState.STA);
+                thread.Start();
+            }
+        }
+        work.Add(a);
+    }
+
+    /// <summary>Current clipboard text, or null (no text, busy, or no answer within the timeout).</summary>
+    public static string GetText(int timeoutMs = 400)
+    {
+        string text = null; var done = new ManualResetEventSlim();
+        Run(() => { try { for (int i = 0; i < 5; i++) { try { if (Clipboard.ContainsText()) text = Clipboard.GetText(); break; } catch (ExternalException) { Thread.Sleep(30); } } } finally { done.Set(); } });
+        return done.Wait(timeoutMs) ? text : null;
+    }
+
+    public static void SetText(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        Run(() => Clipboard.SetDataObject(text, true, 10, 50));
+    }
+
+    /// <summary>The frames that carry a clipboard text: CB, CD &lt;base64 chunk&gt;..., CE (each with the given prefix).</summary>
+    public static List<string> Frames(string text, string prefix)
+    {
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+        var list = new List<string> { prefix + "CB" };
+        for (int i = 0; i < b64.Length; i += ChunkChars) list.Add(prefix + "CD " + b64.Substring(i, Math.Min(ChunkChars, b64.Length - i)));
+        list.Add(prefix + "CE");
+        return list;
+    }
 }
 
 /// <summary>Authenticated, encrypted framing shared by agent and forwarder.</summary>
@@ -183,6 +295,22 @@ public class DeskViewAgent
     public volatile string Status = "idle";
     public volatile string Client = "";
     public int Moves, Buttons, Keys;             // counters (diagnostics / tests)
+    public volatile bool ShareClipboard = true;
+    public int MaxClipboardBytes = 3 * 1024 * 1024;
+    // Test hooks: where the pointer goes / is, the desktop, and the clipboard (defaults: the real ones).
+    public Action<int, int> SetCursor = (x, y) => { DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2); DvNative.SetCursorPos(x, y); };
+    public Func<System.Drawing.Point> GetCursor = () => { DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2); DvNative.POINT p; DvNative.GetCursorPos(out p); return new System.Drawing.Point(p.X, p.Y); };
+    public Func<System.Drawing.Rectangle> GetDesktop = DvEdge.Desktop;
+    public Func<string> ReadClipboard = () => DvClip.GetText();
+    public Action<string> WriteClipboard = DvClip.SetText;
+    public int Switches;                         // times the pointer came over / went back (tests)
+    public string LastClipboardIn;               // last clipboard text received (tests)
+
+    string edgeIn;                               // side the pointer came in from while the other machine drives it (null = not)
+    string lastClip;                             // last text synced either way: never echo it back
+    StringBuilder clipIn;
+    Stream sessionStream; byte[][] sessionKeys; ulong sendSeq;
+    readonly object sendLock = new object();
 
     string requestedMonitor;
     TcpListener listener;
@@ -279,8 +407,11 @@ public class DeskViewAgent
             ReleaseAll();
             c.ReceiveTimeout = 30000;                             // the viewer pings every few seconds
             Client = ip; Status = "controlled by " + ip;
+            lock (sendLock) { sessionStream = s; sessionKeys = keys; sendSeq = 0; }
+            edgeIn = null;
             Handle(first);
-            while (!stopping) Handle(DvProto.ReadFrame(s, keys, ref lastSeq));
+            // larger frames than the handshake allows: clipboard chunks (only after authentication)
+            while (!stopping) Handle(DvProto.ReadFrame(s, keys, ref lastSeq, DvProto.MaxFileFrame));
         }
         catch (InvalidDataException) { if (!authed) Fail(ip); }
         catch { }
@@ -288,7 +419,12 @@ public class DeskViewAgent
         {
             bool wasActive;
             lock (sessionLock) { wasActive = active == c; if (wasActive) active = null; }
-            if (wasActive) { ReleaseAll(); Client = ""; Status = "listening on " + Port; }
+            if (wasActive)
+            {
+                lock (sendLock) { sessionStream = null; sessionKeys = null; }
+                edgeIn = null; clipIn = null;
+                ReleaseAll(); Client = ""; Status = "listening on " + Port;
+            }
             try { c.Close(); } catch { }
         }
     }
@@ -359,13 +495,82 @@ public class DeskViewAgent
         return full;
     }
 
+    /// <summary>Agent -> viewer message ("&lt;" marks this direction, so a reflected frame is never taken for input).</summary>
+    void Send(string msg)
+    {
+        lock (sendLock)
+        {
+            if (sessionStream == null) return;
+            try { DvProto.WriteFrame(sessionStream, sessionKeys, ++sendSeq, "<" + msg); } catch { }
+        }
+    }
+
+    /// <summary>The other machine's pointer left its desktop through 'viewerSide' at 'along': it appears here
+    /// on the opposite side, and its moves now drive this pointer.</summary>
+    void Enter(string viewerSide, int along)
+    {
+        var side = DvEdge.Opposite(viewerSide);
+        if (side == "") return;
+        var pt = DvEdge.Place(side, Math.Max(0, Math.Min(65535, along)), GetDesktop(), 1);
+        SetCursor(pt.X, pt.Y);
+        edgeIn = side;
+        Interlocked.Increment(ref Switches);
+    }
+
+    void MoveBy(int dx, int dy)
+    {
+        if (edgeIn == null) return;
+        dx = Math.Max(-4000, Math.Min(4000, dx)); dy = Math.Max(-4000, Math.Min(4000, dy));
+        var d = GetDesktop(); var cur = GetCursor();
+        int nx = cur.X + dx, ny = cur.Y + dy;
+        bool buttonHeld; lock (heldButtons) buttonHeld = heldButtons.Count > 0;
+        // Back across the side it came in from (not while dragging: the drag stays on this machine).
+        if (DvEdge.Beyond(edgeIn, nx, ny, d) && !buttonHeld) { SetCursor(Math.Max(d.Left, Math.Min(d.Right - 1, nx)), Math.Max(d.Top, Math.Min(d.Bottom - 1, ny))); Leave(DvEdge.Along(edgeIn, nx, ny, d)); return; }   // rests on the edge it left by
+        SetCursor(Math.Max(d.Left, Math.Min(d.Right - 1, nx)), Math.Max(d.Top, Math.Min(d.Bottom - 1, ny)));
+        Interlocked.Increment(ref Moves);
+    }
+
+    void Leave(int along)
+    {
+        SendClipboardIfChanged();
+        ReleaseAll();                 // nothing stays held here once the keyboard is back on the other machine
+        edgeIn = null;
+        Interlocked.Increment(ref Switches);
+        Send("L " + along);
+    }
+
+    void SendClipboardIfChanged()
+    {
+        if (!ShareClipboard) return;
+        var text = ReadClipboard();
+        if (string.IsNullOrEmpty(text) || text == lastClip || Encoding.UTF8.GetByteCount(text) > MaxClipboardBytes) return;
+        lastClip = text;
+        foreach (var f in DvClip.Frames(text, "")) Send(f);
+    }
+
     void Handle(string line)
     {
+        if (line.StartsWith("<")) throw new InvalidDataException("reflected frame");
         var p = line.Split(' ');
         try
         {
             switch (p[0])
             {
+                case "E": Enter(p[1], int.Parse(p[2])); break;
+                case "R": MoveBy(int.Parse(p[1]), int.Parse(p[2])); break;
+                case "X": if (edgeIn != null) { edgeIn = null; ReleaseAll(); } break;   // the other machine took its pointer back
+                case "CB": clipIn = new StringBuilder(); break;
+                case "CD":
+                    if (clipIn != null && p.Length > 1) { clipIn.Append(p[1]); if (clipIn.Length > MaxClipboardBytes / 3 * 4 + 8) clipIn = null; }
+                    break;
+                case "CE":
+                    if (clipIn != null)
+                    {
+                        var text = Encoding.UTF8.GetString(Convert.FromBase64String(clipIn.ToString())); clipIn = null;
+                        lastClip = text; LastClipboardIn = text;
+                        if (ShareClipboard) WriteClipboard(text);
+                    }
+                    break;
                 case "M":
                 {
                     int x = TL + (int)Math.Round(int.Parse(p[1]) * (TW - 1) / 65535.0);
@@ -436,11 +641,28 @@ public class DeskViewForwarder
     public volatile int VidL, VidT, VidW = 1, VidH = 1;   // where the remote picture is on this machine (physical px)
     public volatile bool Active;                          // forward input only while viewing
     public bool AcceptInjected;                           // tests only: also treat synthetic input as physical
+    public bool NoHooks;                                  // tests only: don't capture this machine's real input
     public volatile bool HotkeysEnabled = true;           // detect DeskView hotkeys from the physical keyboard only
     public volatile string Status = "idle";
     public volatile bool Connected;
+    // Built-in switching: push the pointer off this side of the desktop ("left"/"right"/"top"/"bottom",
+    // "" = off) and it continues on the other machine, with the keyboard; it comes back the same way.
+    public volatile string Edge = "";
+    public volatile bool RemoteOwned;                     // the pointer and keyboard are on the other machine now
+    public volatile bool ShareClipboard = true;
+    public int MaxClipboardBytes = 3 * 1024 * 1024;
+    public int Switches;                                  // times the pointer went over / came back (tests)
+    public Func<System.Drawing.Rectangle> GetDesktop = DvEdge.Desktop;   // test hook
 
-    int pendingHotkey;                                    // vk of a physical Ctrl+Alt+0..9 / D press
+    int parkX, parkY;                                     // where the local pointer waits, hidden, meanwhile
+    volatile bool clipToSend;
+    string lastClip;
+    StringBuilder clipIn;
+    readonly ConcurrentQueue<string> clipToSet = new ConcurrentQueue<string>();
+    Form cloak;                                           // invisible window under the parked pointer: hides it
+    volatile bool readerDead;
+
+    int pendingHotkey;                                   // vk of a physical Ctrl+Alt+0..9 / D press
     Thread hookThread, netThread;
     volatile bool stopping;
     DvNative.HookProc mouseProc, keyProc;
@@ -477,6 +699,7 @@ public class DeskViewForwarder
 
     void InstallHooks()
     {
+        if (NoHooks) return;
         if (mouseHook != IntPtr.Zero) DvNative.UnhookWindowsHookEx(mouseHook);
         if (keyHook != IntPtr.Zero) DvNative.UnhookWindowsHookEx(keyHook);
         mouseHook = DvNative.SetWindowsHookEx(14, mouseProc, mod, 0);   // WH_MOUSE_LL
@@ -489,13 +712,19 @@ public class DeskViewForwarder
         DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
         mouseProc = MouseHook; keyProc = KeyHook;
         mod = DvNative.GetModuleHandle(null);
+        cloak = new CloakForm();
+        cloak.CreateControl(); var unused = cloak.Handle;     // created on this thread so the hook can show it at once
         InstallHooks();
-        var t = new System.Windows.Forms.Timer { Interval = 100 };
+        var t = new System.Windows.Forms.Timer { Interval = 50 };
         DateTime lastReinstall = DateTime.Now;
         t.Tick += delegate
         {
             if (stopping) { Application.ExitThread(); return; }
-            bool fwd = Forwarding;
+            // Clipboard, on this STA thread: ours goes over when the pointer does; theirs arrives when it comes back.
+            if (clipToSend) { clipToSend = false; SendClipboardIfChanged(); }
+            string incoming; while (clipToSet.TryDequeue(out incoming)) { lastClip = incoming; DvClip.SetText(incoming); }   // never on this (input) thread
+            if (!RemoteOwned && cloak.Visible) cloak.Hide();
+            bool fwd = Forwarding || RemoteOwned;
             if (fwd != wasForwarding)
             {
                 // Started or stopped forwarding: modifier tracking restarts from the real keyboard state, and
@@ -535,19 +764,33 @@ public class DeskViewForwarder
                 ulong seq = 0;
                 Connected = true; Status = "connected to " + Peer + " (encrypted)";
                 if (!string.IsNullOrEmpty(Monitor)) DvProto.WriteFrame(s, keys, ++seq, "S " + Monitor);
+                // The agent's messages (pointer handed back, its clipboard) on their own thread: no added delay.
+                readerDead = false;
+                var reader = new Thread(() =>
+                {
+                    ulong rseq = 0;
+                    try { while (!stopping) OnAgentMessage(DvProto.ReadFrame(s, keys, ref rseq, DvProto.MaxFileFrame)); }
+                    catch { }
+                    readerDead = true;
+                }) { IsBackground = true, Name = "DeskViewForwarderRead" };
+                c.ReceiveTimeout = 0;                              // the agent may stay quiet for a long time
+                reader.Start();
                 DateTime lastPing = DateTime.Now;
                 while (!stopping)
                 {
-                    // The agent sends nothing after the handshake, so "readable" means it closed the link:
-                    // notice within 100 ms, so input goes back to this machine instead of into a dead link.
-                    if (c.Client.Poll(0, SelectMode.SelectRead) && c.Available == 0) throw new IOException("the other machine closed the link");
+                    // A closed link is noticed within 100 ms, so input goes back to this machine instead of into it.
+                    if (readerDead) throw new IOException("the other machine closed the link");
                     string msg;
                     if (queue.TryTake(out msg, 100)) { DvProto.WriteFrame(s, keys, ++seq, msg); while (queue.TryTake(out msg)) DvProto.WriteFrame(s, keys, ++seq, msg); }
                     if ((DateTime.Now - lastPing).TotalSeconds > 5) { DvProto.WriteFrame(s, keys, ++seq, "P"); lastPing = DateTime.Now; }
                 }
             }
             catch (Exception e) { Status = "not connected (" + e.Message + ")"; }
-            finally { Connected = false; if (c != null) try { c.Close(); } catch { } }
+            finally
+            {
+                Connected = false; if (c != null) try { c.Close(); } catch { }
+                if (RemoteOwned) ComeBack(32768);                 // link lost: the pointer returns to this machine
+            }
             if (!stopping) Thread.Sleep(1000);
         }
     }
@@ -571,7 +814,17 @@ public class DeskViewForwarder
         IntPtr prev = DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
         try
         {
-            if (code >= 0 && Forwarding)
+            if (code >= 0 && Connected && (RemoteOwned || (Edge != "" && (int)w == 0x0200)))
+            {
+                var m = (DvNative.MSLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(DvNative.MSLLHOOKSTRUCT));
+                bool injected = (m.flags & 0x1) != 0;
+                if ((!injected || AcceptInjected) && m.extra != DvNative.AgentMarker)
+                {
+                    if (RemoteOwned) { RemoteMouse((int)w, m); return (IntPtr)1; }       // all of it happens over there
+                    if (TryEnter(m.pt.X, m.pt.Y)) return (IntPtr)1;
+                }
+            }
+            if (code >= 0 && Forwarding && !RemoteOwned)   // over a picture of the other machine
             {
                 var m = (DvNative.MSLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(DvNative.MSLLHOOKSTRUCT));
                 bool injected = (m.flags & 0x1) != 0;
@@ -611,6 +864,115 @@ public class DeskViewForwarder
         return DvNative.CallNextHookEx(mouseHook, code, w, l);
     }
 
+    /// <summary>The pointer touches the switching edge: hand pointer and keyboard to the other machine.
+    /// Public for tests (they call it with made-up positions).</summary>
+    public bool TryEnter(int x, int y)
+    {
+        if (RemoteOwned || !Connected || Edge == "") return false;
+        var d = GetDesktop();
+        if (!DvEdge.AtEdge(Edge, x, y, d)) return false;
+        // Not while a button is held: dragging a window to the edge must not throw it to the other machine.
+        if (!AcceptInjected && (Held(0x01) || Held(0x02) || Held(0x04))) return false;
+        // Park the local pointer in the middle of its monitor (moves are measured from there), hidden.
+        var mon = Screen.FromPoint(new System.Drawing.Point(x, y)).Bounds;
+        parkX = mon.Left + mon.Width / 2; parkY = mon.Top + mon.Height / 2;
+        ctrl = (DvNative.GetAsyncKeyState(0x11) & 0x8000) != 0;
+        alt = (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
+        RemoteOwned = true;
+        Interlocked.Increment(ref Switches);
+        Enqueue("E " + Edge + " " + DvEdge.Along(Edge, x, y, d));
+        clipToSend = true;
+        if (!AcceptInjected)
+        {
+            DvNative.SetCursorPos(parkX, parkY);
+            if (cloak != null) cloak.BeginInvoke((Action)(() => { cloak.Bounds = new System.Drawing.Rectangle(parkX - 40, parkY - 40, 80, 80); cloak.Show(); DvNative.SetCursorPos(parkX, parkY); }));
+        }
+        return true;
+    }
+
+    static bool Held(int vk) { return (DvNative.GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+    void RemoteMouse(int msg, DvNative.MSLLHOOKSTRUCT m)
+    {
+        if (msg == 0x0200)
+        {
+            int dx = m.pt.X - parkX, dy = m.pt.Y - parkY;     // the local pointer stays parked: this is the motion
+            if (dx != 0 || dy != 0) Enqueue("R " + dx + " " + dy);
+            return;
+        }
+        if (msg == 0x020A || msg == 0x020E) { Enqueue((msg == 0x020A ? "W " : "H ") + (short)(m.mouseData >> 16)); return; }
+        int b = ButtonOf(msg, m.mouseData);
+        if (b >= 0) Enqueue("B " + b + " " + ((msg == 0x0201 || msg == 0x0204 || msg == 0x0207 || msg == 0x020B) ? 1 : 0));
+    }
+
+    /// <summary>The pointer returns to this machine on the switching edge, at 'along' (0..65535).</summary>
+    void ComeBack(int along)
+    {
+        if (!RemoteOwned) return;
+        RemoteOwned = false;
+        Interlocked.Increment(ref Switches);
+        if (AcceptInjected || Edge == "") return;
+        var pt = DvEdge.Place(Edge, along, GetDesktop(), 2);
+        DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
+        DvNative.SetCursorPos(pt.X, pt.Y);
+        if (cloak != null && cloak.IsHandleCreated) cloak.BeginInvoke((Action)(() => cloak.Hide()));
+    }
+
+    /// <summary>Take the pointer back without moving it (Ctrl+Alt+0, or switching turned off).</summary>
+    public void TakeBack() { if (RemoteOwned) { Enqueue("X"); ComeBack(32768); } }
+
+    void OnAgentMessage(string msg)
+    {
+        if (!msg.StartsWith("<")) throw new InvalidDataException("not from the agent");
+        var p = msg.Substring(1).Split(' ');
+        switch (p[0])
+        {
+            case "L": int a; if (p.Length > 1 && int.TryParse(p[1], out a)) ComeBack(Math.Max(0, Math.Min(65535, a))); break;
+            case "CB": clipIn = new StringBuilder(); break;
+            case "CD": if (clipIn != null && p.Length > 1) { clipIn.Append(p[1]); if (clipIn.Length > MaxClipboardBytes / 3 * 4 + 8) clipIn = null; } break;
+            case "CE":
+                if (clipIn != null)
+                {
+                    try { var text = Encoding.UTF8.GetString(Convert.FromBase64String(clipIn.ToString())); if (ShareClipboard) clipToSet.Enqueue(text); } catch (FormatException) { }
+                    clipIn = null;
+                }
+                break;
+        }
+    }
+
+    void SendClipboardIfChanged()
+    {
+        if (!ShareClipboard || !Connected) return;
+        // Reading the clipboard can hang (another program's data it renders on request): on the clipboard thread,
+        // with a time limit, never on this input thread.
+        var text = DvClip.GetText(300);
+        if (string.IsNullOrEmpty(text) || text == lastClip || Encoding.UTF8.GetByteCount(text) > MaxClipboardBytes) return;
+        lastClip = text;
+        foreach (var f in DvClip.Frames(text, "")) Enqueue(f);
+    }
+
+    /// <summary>A nearly invisible window with an empty cursor, under the parked pointer.</summary>
+    class CloakForm : Form
+    {
+        static readonly Cursor Empty = MakeEmpty();
+        static Cursor MakeEmpty()
+        {
+            var and = new byte[32 * 4]; for (int i = 0; i < and.Length; i++) and[i] = 0xFF;
+            var h = DvNative.CreateCursor(IntPtr.Zero, 0, 0, 32, 32, and, new byte[32 * 4]);
+            return h == IntPtr.Zero ? Cursors.Default : new Cursor(h);
+        }
+        public CloakForm()
+        {
+            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; Opacity = 0.01;
+            StartPosition = FormStartPosition.Manual; Size = new System.Drawing.Size(80, 80); Cursor = Empty;
+        }
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override CreateParams CreateParams
+        {
+            get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x80 | 0x8; return cp; }   // NOACTIVATE | TOOLWINDOW | TOPMOST
+        }
+    }
+
     IntPtr KeyHook(int code, IntPtr w, IntPtr l)
     {
         if (code >= 0)
@@ -620,7 +982,7 @@ public class DeskViewForwarder
             bool down = ((int)w == 0x0100 || (int)w == 0x0104);   // WM_KEYDOWN / WM_SYSKEYDOWN
             int vk = (int)k.vkCode;
             bool physical = (!injected || AcceptInjected) && k.extra != DvNative.AgentMarker;
-            bool fwd = Forwarding;
+            bool fwd = Forwarding || (RemoteOwned && Connected);
             if (physical)
             {
                 // Ctrl and the LEFT Alt only: AltGr arrives as LCtrl+RAlt and must keep typing { [ ] } etc.
@@ -639,6 +1001,7 @@ public class DeskViewForwarder
                     if (down)
                     {
                         if (fwd) { Enqueue("K 162 29 0 0"); Enqueue("K 163 29 1 0"); Enqueue("K 164 56 0 0"); Enqueue("K 165 56 1 0"); }
+                        if (vk == 0x30) TakeBack();                     // Ctrl+Alt+0 always brings the pointer home
                         Interlocked.Exchange(ref pendingHotkey, vk);
                     }
                     return (IntPtr)1;

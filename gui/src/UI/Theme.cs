@@ -108,7 +108,13 @@ namespace DeskView.UI
         /// <summary>Copies text, retrying while another program holds the clipboard; never throws.</summary>
         public static bool CopyText(string text)
         {
-            try { Clipboard.SetDataObject(text ?? "", true, 10, 100); return true; }
-            catch (Exception) { MessageBox.Show("The clipboard is busy (another program is using it). Try again in a moment.", "DeskView"); return false; }
+            // other programs (clipboard sync, chat apps) can hold the clipboard for a second or more: keep trying ~3 s
+            for (int i = 0; i < 3; i++)
+            {
+                try { Clipboard.SetDataObject(text ?? "", true, 10, 100); return true; }
+                catch (Exception) { System.Threading.Thread.Sleep(50); }
+            }
+            TrayApp.Instance?.Notify("The clipboard is busy (another program is using it). Try Copy again in a moment.", true);
+            return false;
         }    }
 }

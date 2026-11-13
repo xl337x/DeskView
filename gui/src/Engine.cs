@@ -37,7 +37,19 @@ namespace DeskView
 
         // ------------------------------------------------------------------------------------------------- state
         public bool Connected => !string.IsNullOrEmpty(CurrentPeer());
-        public bool EngineRunning => CoreControl.Running;
+        public bool EngineRunning => Builtin ? forwarder.Connected || agent.Client.Length > 0 : CoreControl.Running;
+        /// <summary>DeskView's own switching and clipboard instead of the separate engine.</summary>
+        public bool Builtin => S.InputEngine == "DeskView";
+        /// <summary>The side of this desktop that leads to the other computer.</summary>
+        string EdgeName
+        {
+            get
+            {
+                var side = S.RemoteSide == Side.None ? Side.Right : S.RemoteSide;
+                var name = side.ToString().ToLowerInvariant();
+                return S.Role == Role.Server ? name : DeskView.Tools.OppositeSide(name);
+            }
+        }
         public string AgentClient => agent.Client;
         public bool ForwarderConnected => forwarder.Connected;
         public string ForwarderStatus => forwarder.Status;
@@ -45,6 +57,12 @@ namespace DeskView
         /// <summary>The other computer's address, from the live keyboard/mouse connection.</summary>
         public string CurrentPeer()
         {
+            if (Builtin)
+            {
+                // our own link: the client's forwarder reaches the server's agent (and the other way round)
+                if (S.Role == Role.Server) return agent.Client.Length > 0 ? Regex.Replace(agent.Client, "^::ffff:", "") : null;
+                return forwarder.Connected ? S.ServerAddress : null;
+            }
             try
             {
                 foreach (var c in IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections())
@@ -78,6 +96,7 @@ namespace DeskView
             try { agent.Start(); } catch { Notice?.Invoke($"Control port {S.ControlPort} is in use - control from the other computer is off.", true); }
             forwarder.Port = S.ControlPort; forwarder.Code = S.PairCode;
             if (S.Role == Role.Client) forwarder.Peer = Peer() ?? "";
+            ApplyBuiltin();
             forwarder.Start();
             if (S.Role == Role.Client) S.ClientView = 0;      // start on this computer's own screen
             ApplyPointer();
@@ -106,13 +125,29 @@ namespace DeskView
             timer.Stop();
             try { if (S.Role == Role.Server) CoreControl.WriteConfig(S, null); } catch { }   // no portal left behind
             foreach (var z in zones.Values) z.Close();
+            forwarder.TakeBack();
             forwarder.Stop(); agent.Stop(); Media.StopPlayers(); Media.StopSenders();
+            if (Builtin && S.Role != Role.None) try { CoreControl.Start(); } catch { }   // the mouse keeps working without DeskView
         }
 
         /// <summary>Write the engine settings; start or restart the engine when they changed (or when asked).</summary>
+        /// <summary>Switching edge, clipboard and peers for DeskView's own engine (or off for the classic one).</summary>
+        public void ApplyBuiltin()
+        {
+            forwarder.Edge = Builtin && S.Role != Role.None ? EdgeName : "";
+            if (!Builtin) forwarder.TakeBack();
+            forwarder.ShareClipboard = agent.ShareClipboard = Builtin && S.ClipboardEnabled;
+            forwarder.MaxClipboardBytes = agent.MaxClipboardBytes = Math.Max(1, S.ClipboardSizeMb) * 1024 * 1024;
+            agent.AvoidLeftEdge = agent.AvoidRightEdge = S.Role == Role.Server && !Builtin;
+            if (S.Role == Role.Server && Builtin && !string.IsNullOrEmpty(S.Peer)) forwarder.Peer = S.Peer;
+            if (S.Role == Role.Client && Builtin) forwarder.Peer = S.ServerAddress;
+        }
+
         public void ApplyEngine(bool forceStart = false)
         {
             if (S.Role == Role.None) return;
+            ApplyBuiltin();
+            if (Builtin) { if (CoreControl.Running) CoreControl.Stop(); return; }   // our own switching: the separate engine stays off
             bool changed = CoreControl.WriteConfig(S, S.Role == Role.Server ? PortalValue() : null);
             if (changed || forceStart || !CoreControl.Running)
             {
@@ -253,6 +288,16 @@ namespace DeskView
 
         void UpdatePortals()
         {
+            if (Builtin)
+            {
+                var pl = Media.Players.Values.FirstOrDefault(p => p.Live);
+                if (pl == null) { forwarder.Active = false; return; }
+                var r = Media.PictureRect(pl);
+                forwarder.VidL = r.X; forwarder.VidT = r.Y; forwarder.VidW = r.Width; forwarder.VidH = r.Height;
+                if (forwarder.Monitor != pl.RemoteN.ToString()) forwarder.SelectMonitor(pl.RemoteN.ToString());
+                forwarder.Active = true;
+                return;
+            }
             var value = PortalValue();
             if (value == lastPortal) return;
             lastPortal = value;
@@ -357,6 +402,7 @@ namespace DeskView
                     }
                     var before = S.Peer; Peer();
                     if (S.Role == Role.Client && S.Peer != before) forwarder.Peer = S.Peer;
+                    if (Builtin && S.Role == Role.Server && !string.IsNullOrEmpty(S.Peer) && forwarder.Peer != S.Peer) forwarder.Peer = S.Peer;
                     LearnRemoteName();
                     Changed?.Invoke();
                 }
