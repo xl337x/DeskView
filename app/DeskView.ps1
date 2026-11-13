@@ -312,8 +312,11 @@ function Start-Player($pl) {
     # Fit keeps the remote shape (bars if it differs from the monitor); Stretch fills the monitor.
     $vf = if ($S.Picture -eq 'Stretch') { "-vf scale=$($r.Width):$($r.Height) " } else { '' }
     $hw = if ($pl.Fails -lt 4) { '-hwaccel d3d11va ' } else { '' }   # GPU decode: ~3.5x less CPU
+    # An old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears.
+    # A sender that already failed once to show up quickly gets the same patience.
+    $probe = if ($pl.Legacy -or $pl.Fails -ge 2) { '-probesize 2000000 -analyzeduration 3000000' } else { '-probesize 32768 -analyzeduration 0' }
     $a = "-hide_banner -loglevel error $hw-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext " +
-         "-probesize 32768 -analyzeduration 0 -an -noborder -alwaysontop $vf" +
+         "$probe -an -noborder -alwaysontop $vf" +
          "-left $($r.X) -top $($r.Y) -x $($r.Width) -y $($r.Height) -window_title DeskView `"$url`""
     $psi = New-Object System.Diagnostics.ProcessStartInfo $ffplay, $a
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
