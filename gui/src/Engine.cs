@@ -19,6 +19,9 @@ namespace DeskView
         readonly DeskViewForwarder forwarder = new DeskViewForwarder();
         readonly Timer timer = new Timer { Interval = 250 };
         string layoutSig = "", lastPortal = null;
+        readonly Dictionary<string, DeskViewDropZone> zones = new Dictionary<string, DeskViewDropZone>();
+        readonly List<DeskViewTransfer> transfers = new List<DeskViewTransfer>();
+        DateTime lastReceivedNotice = DateTime.MinValue;
         DateTime lastSlow = DateTime.MinValue;
         public string LastOn = "";
 
@@ -89,6 +92,7 @@ namespace DeskView
         {
             timer.Stop();
             try { if (S.Role == Role.Server) CoreControl.WriteConfig(S, null); } catch { }   // no portal left behind
+            foreach (var z in zones.Values) z.Close();
             forwarder.Stop(); agent.Stop(); Media.StopPlayers(); Media.StopSenders();
         }
 
@@ -120,6 +124,7 @@ namespace DeskView
         public void SyncPlayers()
         {
             Media.SyncPlayers(WantedPlayers(), Peer());
+            UpdateDropZones();
             if (S.Role == Role.Server) UpdatePortals();
             else
             {
@@ -249,6 +254,48 @@ namespace DeskView
             forwarder.VidL = r.X; forwarder.VidT = r.Y; forwarder.VidW = r.Width; forwarder.VidH = r.Height;
         }
 
+        // ------------------------------------------------------------------------------------------------- files
+        /// <summary>Invisible drop targets over the other computer's pictures: files dragged onto them are sent there.</summary>
+        void UpdateDropZones()
+        {
+            foreach (var k in zones.Keys.ToList())
+                if (!Media.Players.TryGetValue(k, out var p) || p.RemoteRes == null) { zones[k].Close(); zones.Remove(k); }
+            foreach (var pl in Media.Players.Values.Where(p => p.RemoteRes != null))
+            {
+                if (!zones.TryGetValue(pl.Key, out var z))
+                {
+                    z = new DeskViewDropZone { Target = S.Role == Role.Server ? (string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName) : "the server" };
+                    z.Dropped += SendFiles;
+                    zones[pl.Key] = z;
+                }
+                z.Place(Media.PictureRect(pl));
+                z.TopMost = false; z.TopMost = true;   // stay above the video window, which also puts itself on top
+            }
+        }
+
+        public void SendFiles(string[] files)
+        {
+            var peer = Peer();
+            if (string.IsNullOrEmpty(peer)) { Notice?.Invoke("The other computer is not connected.", true); return; }
+            transfers.Add(DeskViewTransfer.Start(Tools.Host(peer).Trim('[', ']'), S.ControlPort, S.PairCode, files));
+            Notice?.Invoke($"Sending {files.Length} item(s)...", false);
+        }
+
+        void ServiceFiles()
+        {
+            foreach (var tr in transfers.Where(x => x.Done).ToList())
+            {
+                Notice?.Invoke(tr.Error != null ? "Sending failed: " + tr.Error : "Sent: " + string.Join(", ", tr.Paths.Select(Path.GetFileName)), tr.Error != null);
+                transfers.Remove(tr);
+            }
+            var got = new List<string>();
+            while (agent.Received.TryDequeue(out var p)) got.Add(p);
+            if (got.Count == 0) return;
+            Notice?.Invoke($"Received {got.Count} file(s) in Downloads\\DeskView: " + string.Join(", ", got.Take(3).Select(Path.GetFileName)), false);
+            if ((DateTime.Now - lastReceivedNotice).TotalSeconds > 5) System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + got.Last() + "\"");
+            lastReceivedNotice = DateTime.Now;
+        }
+
         // ------------------------------------------------------------------------------------------------- heartbeat
         static string LayoutSignature() => string.Join(";", Tools.OrderedScreens().Select(s => s.DeviceName + "=" + s.Bounds));
 
@@ -262,6 +309,7 @@ namespace DeskView
                 var cmdFile = Path.Combine(AppSettings.Dir, "command.txt");
                 if (File.Exists(cmdFile)) { var c = File.ReadAllText(cmdFile).Trim(); File.Delete(cmdFile); if (c.Length > 0) ShowOn(c); }
 
+                ServiceFiles();
                 var req = agent.TakeRequestedMonitor();
                 if (req != null) SetAgentScreen(req);
                 Media.ServiceSenders();
@@ -277,6 +325,7 @@ namespace DeskView
                 }
                 if (Media.ServicePlayers(Peer()))
                 {
+                    UpdateDropZones();
                     if (S.Role == Role.Server) UpdatePortals(); else UpdateForwarderPicture();
                     Changed?.Invoke();
                 }

@@ -229,7 +229,7 @@ namespace DeskView
                 {
                     pl.P.Refresh();
                     // out of Alt+Tab, never takes focus (a stray Esc would close it), really on top
-                    if (pl.P.MainWindowHandle != IntPtr.Zero) { DeskViewPortal.MakePassive(pl.P.MainWindowHandle); pl.Passive = true; }
+                    if (pl.P.MainWindowHandle != IntPtr.Zero) { DeskViewPortal.MakePassive(pl.P.MainWindowHandle); pl.Passive = true; changed = true; }
                 }
                 long len = File.Exists(pl.Report) ? new FileInfo(pl.Report).Length : 0;
                 if (len != pl.ReportLen) { pl.ReportLen = len; pl.ReportGrew = DateTime.Now; }

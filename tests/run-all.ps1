@@ -12,6 +12,8 @@ function Run($name, $file, $extra = @()) {
 }
 Run 'Height mapping between resolutions' 'mapping.tests.ps1'
 Run 'Control channel (agent + forwarder, loopback)' 'input.tests.ps1'
+Run 'Sending files (drag and drop)' 'files.tests.ps1'
+if (Test-Path (Join-Path $PSScriptRoot '..\gui\bin\DeskView.exe')) { Run 'DeskView app logic' 'app.tests.ps1' }
 if ($Live) { Run 'Portal on every monitor (live)' 'portal.tests.ps1' @('-All') }
 Write-Host ''
 if ($failed) { Write-Host "$failed test file(s) failed." -ForegroundColor Red; exit 1 } else { Write-Host 'All tests passed.' -ForegroundColor Green }

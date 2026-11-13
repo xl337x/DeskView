@@ -23,7 +23,7 @@ param([string]$Show)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 foreach ($cs in 'DeskView-Portal.cs', 'DeskView-Input.cs', 'DeskView-Dxgi.cs') {
-    Add-Type -Path (Join-Path $PSScriptRoot $cs) -ReferencedAssemblies System.Windows.Forms
+    Add-Type -Path (Join-Path $PSScriptRoot $cs) -ReferencedAssemblies System.Windows.Forms, System.Drawing
 }
 # Work in physical pixels: the engine, the hooks and ffplay all do, and scaled monitors otherwise disagree.
 [DeskViewPortal]::UsePhysicalPixels()
@@ -343,6 +343,49 @@ function Get-PictureRect($pl) {
 }
 
 # ============================================================================================================
+# FILES - drag files onto the other computer's picture to send them there (encrypted, paired)
+# ============================================================================================================
+$script:dropZones = @{}; $script:transfers = @(); $script:lastReceivedNotice = Get-Date '2000-01-01'
+function Update-DropZones {
+    foreach ($k in @($script:dropZones.Keys)) {
+        if (-not $script:players[$k] -or -not $script:players[$k].RemoteRes) { $script:dropZones[$k].Close(); $script:dropZones.Remove($k) }
+    }
+    foreach ($pl in @($script:players.Values)) {
+        if (-not $pl.RemoteRes) { continue }
+        $zone = $script:dropZones[$pl.Key]
+        if (-not $zone) {
+            $zone = New-Object DeskViewDropZone
+            $zone.Target = if ($role -eq 'Server') { $remoteName } else { 'the server' }
+            $zone.add_Dropped([Action[string[]]]{ param($files) Send-Files $files })
+            $script:dropZones[$pl.Key] = $zone
+        }
+        $pr = Get-PictureRect $pl
+        $zone.Place((New-Object System.Drawing.Rectangle $pr.L, $pr.T, $pr.W, $pr.H))
+        # the video window puts itself on top; stay above it so drops land here
+        $zone.TopMost = $false; $zone.TopMost = $true
+    }
+}
+function Send-Files([string[]]$files) {
+    $peer = Get-Peer
+    if (-not $peer) { Notify 'The other computer is not connected.' 'Warning'; return }
+    $script:transfers += [DeskViewTransfer]::Start((Format-Host $peer).Trim('[', ']'), $S.ControlPort, $S.PairCode, $files)
+    Notify "Sending $($files.Count) item(s) to $(if ($role -eq 'Server') { $remoteName } else { 'the server' })..."
+}
+function Service-Files {
+    foreach ($tr in @($script:transfers | ? { $_.Done })) {
+        if ($tr.Error) { Notify "Sending failed: $($tr.Error)" 'Warning' 5000 } else { Notify "Sent: $(($tr.Paths | % { Split-Path $_ -Leaf }) -join ', ')" }
+    }
+    $script:transfers = @($script:transfers | ? { -not $_.Done })
+    $got = @(); $p = $null
+    while ($agent.Received.TryDequeue([ref]$p)) { $got += $p }
+    if ($got.Count) {
+        Notify "Received $($got.Count) file(s) in Downloads\DeskView: $(($got | % { Split-Path $_ -Leaf } | Select -First 3) -join ', ')"
+        if (((Get-Date) - $script:lastReceivedNotice).TotalSeconds -gt 5) { Start-Process explorer.exe "/select,`"$($got[-1])`"" }
+        $script:lastReceivedNotice = Get-Date
+    }
+}
+
+# ============================================================================================================
 # SERVER - portals
 # ============================================================================================================
 $portal = New-Object DeskViewPortal          # fallback (hook) portal for an engine without portals: one monitor only
@@ -519,6 +562,7 @@ function Sync-Players {
         if (-not $w -or $w.N -ne $script:players[$k].RemoteN -or $w.Screen.Bounds -ne $script:players[$k].Screen.Bounds) { Stop-Player $script:players[$k]; $script:players.Remove($k) }
     }
     foreach ($w in $wanted) { if (-not $script:players[$w.Key]) { $pl = New-Player $w.Key $w.Screen $w.N; $script:players[$w.Key] = $pl; Start-Player $pl } }
+    Update-DropZones
     if ($role -eq 'Server') { Update-Portals }
     else {
         if ($S.Monitor -eq 'Off') { $forwarder.Active = $false; return }
@@ -576,6 +620,7 @@ function On-Hotkey($vk) {
 
 function Exit-DeskView {
     try { if ($role -eq 'Server') { if ($nativePortal) { Set-NativePortal '' } else { Restore-EngineLayout } } } catch {}
+    foreach ($z in @($script:dropZones.Values)) { $z.Close() }
     $portal.Stop(); $forwarder.Stop(); $agent.Stop(); Stop-Players; Stop-Senders
     $tray.Visible = $false; [System.Windows.Forms.Application]::Exit()
 }
@@ -670,7 +715,7 @@ function Service-Players {
         if (-not $pl.Passive) {
             $pl.P.Refresh()
             # Keep the video window out of Alt+Tab and from taking focus (a stray Esc would close ffplay).
-            if ($pl.P.MainWindowHandle -ne [IntPtr]::Zero) { [DeskViewPortal]::MakePassive($pl.P.MainWindowHandle); $pl.Passive = $true }
+            if ($pl.P.MainWindowHandle -ne [IntPtr]::Zero) { [DeskViewPortal]::MakePassive($pl.P.MainWindowHandle); $pl.Passive = $true; Update-DropZones }
         }
         $len = if ([IO.File]::Exists($pl.Report)) { (New-Object IO.FileInfo $pl.Report).Length } else { 0 }
         if ($len -ne $pl.ReportLen) { $pl.ReportLen = $len; $pl.ReportGrew = Get-Date }
@@ -691,6 +736,7 @@ function Service-Players {
     }
     if ($changed) {
         if ($role -eq 'Server') { Update-Portals } else { Update-ForwarderPicture }
+        Update-DropZones
         $shown = @($script:players.Values | ? { $_.RemoteRes } | % { "$($_.Key)<-$($_.RemoteN)" }) -join ' '
         Set-TrayText "$remoteName $shown"
         Build-Menu
@@ -720,6 +766,7 @@ $timer.add_Tick({
 
         if ($script:reinstallAt -and (Get-Date) -ge $script:reinstallAt) { $script:reinstallAt = $null; $portal.Reinstall() }
         Service-Players
+        Service-Files
 
         if (((Get-Date) - $script:lastSlow).TotalSeconds -ge 2) {
             $script:lastSlow = Get-Date

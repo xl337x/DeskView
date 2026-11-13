@@ -60,7 +60,7 @@ static class DvNative
 /// <summary>Authenticated, encrypted framing shared by agent and forwarder.</summary>
 public static class DvProto
 {
-    public const int NonceLen = 16, MacLen = 32, MaxFrame = 1024;
+    public const int NonceLen = 16, MacLen = 32, MaxFrame = 1024, MaxFileFrame = 60000;
     static readonly byte[] Salt = Encoding.ASCII.GetBytes("DeskView-pairing-v2");
     static readonly Dictionary<string, byte[]> keyCache = new Dictionary<string, byte[]>();
 
@@ -106,6 +106,23 @@ public static class DvProto
         return b;
     }
 
+    /// <summary>Viewer side of the handshake: proves the code, checks the agent's proof, returns session keys
+    /// (null if the agent refused the code or could not prove it knows it).</summary>
+    public static byte[][] ClientHandshake(Stream s, string code)
+    {
+        var key = PairKey(code);
+        var magic = ReadExact(s, 4);
+        if (Encoding.ASCII.GetString(magic) != "DV2\n") throw new IOException("not a DeskView v2 agent (update the other machine)");
+        var nonceA = ReadExact(s, NonceLen);
+        var nonceV = Random(NonceLen);
+        var proofV = Hmac(key, Ascii("viewer"), nonceA, nonceV);
+        s.Write(nonceV, 0, nonceV.Length); s.Write(proofV, 0, proofV.Length);
+        byte[] proofA;
+        try { proofA = ReadExact(s, MacLen); } catch (IOException) { return null; }
+        if (!SameBytes(proofA, Hmac(key, Ascii("agent"), nonceV, nonceA))) return null;
+        return SessionKeys(key, nonceA, nonceV);
+    }
+
     /// <summary>Per-session keys: [0] = AES-256 key, [1] = HMAC key.</summary>
     public static byte[][] SessionKeys(byte[] pairKey, byte[] nonceAgent, byte[] nonceViewer)
     {
@@ -133,11 +150,11 @@ public static class DvProto
     }
 
     /// <summary>Reads, authenticates and decrypts one frame; seq must exceed lastSeq. Throws on anything wrong.</summary>
-    public static string ReadFrame(Stream s, byte[][] keys, ref ulong lastSeq)
+    public static string ReadFrame(Stream s, byte[][] keys, ref ulong lastSeq, int maxLen = MaxFrame)
     {
         var hdr = ReadExact(s, 2);
         int len = (hdr[0] << 8) | hdr[1];
-        if (len < 8 + 16 + 16 + MacLen || len > MaxFrame) throw new InvalidDataException("bad frame length");
+        if (len < 8 + 16 + 16 + MacLen || len > maxLen) throw new InvalidDataException("bad frame length");
         var body = ReadExact(s, len);
         int ctLen = len - 8 - 16 - MacLen;
         var seqBytes = new byte[8]; var iv = new byte[16]; var ct = new byte[ctLen]; var tag = new byte[MacLen];
@@ -252,14 +269,17 @@ public class DeskViewAgent
             s.Write(proofA, 0, proofA.Length);
             lock (failures) failures.Remove(ip);
             var keys = DvProto.SessionKeys(key, nonceA, nonceV);
+            authed = true;
+            ulong lastSeq = 0;
+            string first = DvProto.ReadFrame(s, keys, ref lastSeq);
+            if (first == "FILES") { c.ReceiveTimeout = 30000; ServeFiles(s, keys, ref lastSeq, ip); return; }   // doesn't take over control
 
             // One controller at a time: a new authenticated session replaces the old one.
             lock (sessionLock) { if (active != null) try { active.Close(); } catch { } active = c; }
             ReleaseAll();
-            authed = true;
             c.ReceiveTimeout = 30000;                             // the viewer pings every few seconds
             Client = ip; Status = "controlled by " + ip;
-            ulong lastSeq = 0;
+            Handle(first);
             while (!stopping) Handle(DvProto.ReadFrame(s, keys, ref lastSeq));
         }
         catch (InvalidDataException) { if (!authed) Fail(ip); }
@@ -271,6 +291,72 @@ public class DeskViewAgent
             if (wasActive) { ReleaseAll(); Client = ""; Status = "listening on " + Port; }
             try { c.Close(); } catch { }
         }
+    }
+
+    /// <summary>Files received (full paths), for the app to announce. Saved under Downloads\DeskView.</summary>
+    public readonly ConcurrentQueue<string> Received = new ConcurrentQueue<string>();
+    public string ReceiveFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "DeskView");
+
+    // F <base64 relative path> <size> | D <base64 bytes> | E (file done) | BYE
+    void ServeFiles(Stream s, byte[][] keys, ref ulong lastSeq, string ip)
+    {
+        FileStream outFile = null; string outPath = null; long expected = 0, written = 0;
+        Status = "receiving files from " + ip;
+        try
+        {
+            while (!stopping)
+            {
+                var msg = DvProto.ReadFrame(s, keys, ref lastSeq, DvProto.MaxFileFrame);
+                if (msg.StartsWith("F "))
+                {
+                    var p = msg.Split(' ');
+                    if (outFile != null || p.Length != 3) throw new InvalidDataException("bad file header");
+                    expected = long.Parse(p[2]);
+                    if (expected < 0 || expected > 64L << 30) throw new InvalidDataException("bad file size");
+                    outPath = SafeTarget(Encoding.UTF8.GetString(Convert.FromBase64String(p[1])));
+                    Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+                    outFile = new FileStream(outPath, FileMode.CreateNew, FileAccess.Write); written = 0;
+                }
+                else if (msg.StartsWith("D ") && outFile != null)
+                {
+                    var data = Convert.FromBase64String(msg.Substring(2));
+                    if (written + data.Length > expected) throw new InvalidDataException("more data than announced");
+                    outFile.Write(data, 0, data.Length); written += data.Length;
+                }
+                else if (msg == "E" && outFile != null)
+                {
+                    outFile.Dispose(); outFile = null;
+                    if (written != expected) { File.Delete(outPath); throw new InvalidDataException("file cut short"); }
+                    Received.Enqueue(outPath);
+                }
+                else if (msg == "BYE") return;
+            }
+        }
+        finally
+        {
+            if (outFile != null) { outFile.Dispose(); try { File.Delete(outPath); } catch { } }   // never leave half a file
+            Status = "listening on " + Port;
+        }
+    }
+
+    /// <summary>A path under the receive folder: no "..", no drive letters, no reserved names, never overwrites.</summary>
+    string SafeTarget(string relative)
+    {
+        var parts = new List<string>();
+        foreach (var raw in relative.Replace('\\', '/').Split('/'))
+        {
+            var seg = raw.Trim().TrimEnd('.');
+            foreach (var ch in Path.GetInvalidFileNameChars()) seg = seg.Replace(ch, '_');
+            if (seg.Length == 0 || seg == "." || seg == "..") continue;
+            if (System.Text.RegularExpressions.Regex.IsMatch(seg, @"^(CON|PRN|AUX|NUL|COM\d|LPT\d)(\..*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) seg = "_" + seg;
+            parts.Add(seg.Length > 120 ? seg.Substring(0, 120) : seg);
+        }
+        if (parts.Count == 0) parts.Add("file");
+        var full = Path.GetFullPath(Path.Combine(ReceiveFolder, Path.Combine(parts.ToArray())));
+        if (!full.StartsWith(Path.GetFullPath(ReceiveFolder) + Path.DirectorySeparatorChar)) throw new InvalidDataException("bad file name");
+        string dir = Path.GetDirectoryName(full), name = Path.GetFileNameWithoutExtension(full), ext = Path.GetExtension(full);
+        for (int i = 2; File.Exists(full); i++) full = Path.Combine(dir, name + " (" + i + ")" + ext);
+        return full;
     }
 
     void Handle(string line)
@@ -443,19 +529,8 @@ public class DeskViewForwarder
                 c.EndConnect(ar);
                 c.ReceiveTimeout = 5000; c.SendTimeout = 5000;
                 var s = c.GetStream();
-                var key = DvProto.PairKey(Code);
-                var magic = DvProto.ReadExact(s, 4);
-                if (Encoding.ASCII.GetString(magic) != "DV2\n") throw new IOException("not a DeskView v2 agent (update the other machine)");
-                var nonceA = DvProto.ReadExact(s, DvProto.NonceLen);
-                var nonceV = DvProto.Random(DvProto.NonceLen);
-                var proofV = DvProto.Hmac(key, DvProto.Ascii("viewer"), nonceA, nonceV);
-                s.Write(nonceV, 0, nonceV.Length); s.Write(proofV, 0, proofV.Length);
-                byte[] proofA;
-                try { proofA = DvProto.ReadExact(s, DvProto.MacLen); }
-                catch (IOException) { Status = "pairing code rejected by " + Peer; Thread.Sleep(15000); continue; }
-                if (!DvProto.SameBytes(proofA, DvProto.Hmac(key, DvProto.Ascii("agent"), nonceV, nonceA)))
-                { Status = "the other machine could not prove the pairing code - not connecting"; Thread.Sleep(15000); continue; }
-                var keys = DvProto.SessionKeys(key, nonceA, nonceV);
+                var keys = DvProto.ClientHandshake(s, Code);
+                if (keys == null) { Status = "pairing code rejected by " + Peer + " (or it could not prove the code)"; Thread.Sleep(15000); continue; }
                 string drained; while (queue.TryTake(out drained)) { }
                 ulong seq = 0;
                 Connected = true; Status = "connected to " + Peer + " (encrypted)";
@@ -577,5 +652,133 @@ public class DeskViewForwarder
             }
         }
         return DvNative.CallNextHookEx(keyHook, code, w, l);
+    }
+}
+
+/// <summary>Sends files and folders to the other machine's agent over an encrypted, authenticated file session.</summary>
+public static class DeskViewFiles
+{
+    /// <summary>Returns null on success, else what went wrong.</summary>
+    public static string Send(string peer, int port, string code, string[] paths, Action<string> progress)
+    {
+        var items = new List<KeyValuePair<string, string>>();   // full path -> relative name on the other side
+        foreach (var p in paths)
+        {
+            if (File.Exists(p)) items.Add(new KeyValuePair<string, string>(p, Path.GetFileName(p)));
+            else if (Directory.Exists(p))
+            {
+                // same spelling as the enumerated paths (GetFullPath would expand 8.3 short names and shift the cut)
+                var root = Path.GetDirectoryName(p.TrimEnd('\\'));
+                foreach (var f in Directory.EnumerateFiles(p, "*", SearchOption.AllDirectories))
+                    items.Add(new KeyValuePair<string, string>(f, f.Substring(root.Length).TrimStart('\\').Replace('\\', '/')));
+            }
+        }
+        if (items.Count == 0) return "nothing to send";
+        using (var c = new TcpClient(peer.Contains(":") ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork) { NoDelay = true })
+        {
+            var ar = c.BeginConnect(peer, port, null, null);
+            if (!ar.AsyncWaitHandle.WaitOne(4000)) return "the other machine did not answer";
+            c.EndConnect(ar);
+            c.ReceiveTimeout = 10000; c.SendTimeout = 30000;
+            var s = c.GetStream();
+            var keys = DvProto.ClientHandshake(s, code);
+            if (keys == null) return "the other machine refused the pairing code";
+            ulong seq = 0;
+            DvProto.WriteFrame(s, keys, ++seq, "FILES");
+            long total = 0, sent = 0; foreach (var it in items) total += new FileInfo(it.Key).Length;
+            var buf = new byte[32 * 1024];
+            int n = 0;
+            foreach (var it in items)
+            {
+                n++;
+                var len = new FileInfo(it.Key).Length;
+                DvProto.WriteFrame(s, keys, ++seq, "F " + Convert.ToBase64String(Encoding.UTF8.GetBytes(it.Value)) + " " + len);
+                using (var fs = new FileStream(it.Key, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    int r;
+                    while ((r = fs.Read(buf, 0, buf.Length)) > 0)
+                    {
+                        DvProto.WriteFrame(s, keys, ++seq, "D " + Convert.ToBase64String(buf, 0, r));
+                        sent += r;
+                        if (progress != null) progress(string.Format("{0}/{1}: {2} ({3:0}%)", n, items.Count, it.Value, total == 0 ? 100 : sent * 100.0 / total));
+                    }
+                }
+                DvProto.WriteFrame(s, keys, ++seq, "E");
+            }
+            DvProto.WriteFrame(s, keys, ++seq, "BYE");
+            s.Flush();
+            return null;
+        }
+    }
+}
+
+/// <summary>A file transfer running in the background (the UI polls Status / Done / Error).</summary>
+public class DeskViewTransfer
+{
+    public volatile string Status = "starting", Error;
+    public volatile bool Done;
+    public string[] Paths;
+    public static DeskViewTransfer Start(string peer, int port, string code, string[] paths)
+    {
+        var t = new DeskViewTransfer { Paths = paths };
+        new Thread(() =>
+        {
+            try { t.Error = DeskViewFiles.Send(peer, port, code, paths, s => t.Status = s); }
+            catch (Exception e) { t.Error = e.Message; }
+            t.Done = true;
+        }) { IsBackground = true, Name = "DeskViewTransfer" }.Start();
+        return t;
+    }
+}
+
+/// <summary>Invisible window over the other computer's picture that catches files dragged onto it.
+/// It never takes focus; while files are dragged over it, it lights up and says where they go.</summary>
+public class DeskViewDropZone : Form
+{
+    public string Target = "the other computer";
+    public event Action<string[]> Dropped;
+    bool hot;
+
+    public DeskViewDropZone()
+    {
+        FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
+        BackColor = System.Drawing.Color.FromArgb(37, 99, 235); Opacity = 0.01;   // nearly invisible, still a drop target
+        AllowDrop = true; DoubleBuffered = true;
+        DragEnter += (s, e) =>
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            e.Effect = DragDropEffects.Copy; hot = true; Opacity = 0.6; Invalidate();
+        };
+        DragLeave += (s, e) => Cool();
+        DragDrop += (s, e) =>
+        {
+            Cool();
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files != null && files.Length > 0 && Dropped != null) Dropped(files);
+        };
+    }
+
+    void Cool() { hot = false; Opacity = 0.01; Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (!hot) return;
+        using (var f = new System.Drawing.Font("Segoe UI Semibold", 28f))
+        using (var b = new System.Drawing.SolidBrush(System.Drawing.Color.White))
+            e.Graphics.DrawString("Drop to send to " + Target, f, b, ClientRectangle,
+                new System.Drawing.StringFormat { Alignment = System.Drawing.StringAlignment.Center, LineAlignment = System.Drawing.StringAlignment.Center });
+    }
+
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x80; return cp; }   // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+    }
+
+    public void Place(System.Drawing.Rectangle r)
+    {
+        if (Bounds != r) Bounds = r;
+        if (!Visible) Show();
     }
 }
