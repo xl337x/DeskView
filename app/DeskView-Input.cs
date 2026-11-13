@@ -7,9 +7,15 @@
 //                      picture (instant pointer, no video lag); clicks, wheel and keys are swallowed locally
 //                      and only happen on the remote machine. Ctrl+Alt+0..9 / D stay local (DeskView hotkeys).
 //
-// Wire format: UTF-8 lines.  Viewer -> agent:  HELLO <code> | S <DISPLAYn> | M <nx> <ny> (0..65535 within the
+// Security (protocol v2): the pairing code is never sent. Both sides derive K = PBKDF2-SHA256(code) and prove
+// knowledge of it with HMAC challenges over fresh nonces from both sides (mutual authentication). Each
+// session then derives its own AES-256 and HMAC-SHA256 keys; every message is AES-CBC encrypted and
+// authenticated (encrypt-then-MAC) with a strictly increasing sequence number (no replay, no tampering).
+// Frames are length-limited, unauthenticated peers get a short deadline, and repeated failures from an
+// address lock it out for a minute.
+//
+// Messages (inside the encrypted frames, viewer -> agent): S <DISPLAYn|n> | M <nx> <ny> (0..65535 within the
 // streamed monitor) | B <button 0-4> <1 down/0 up> | W <delta> | H <delta> | K <vk> <scan> <ext 0/1> <1/0> | P
-// Agent -> viewer:  OK | NO | PONG
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -17,6 +23,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -39,35 +46,140 @@ static class DvNative
 
     [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] i, int cb);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-    [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
-    [DllImport("user32.dll")] public static extern IntPtr SetWindowsHookEx(int id, HookProc p, IntPtr mod, uint tid);
+    [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SetWindowsHookEx(int id, HookProc p, IntPtr mod, uint tid);
     [DllImport("user32.dll")] public static extern bool UnhookWindowsHookEx(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr CallNextHookEx(IntPtr h, int c, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
     [DllImport("kernel32.dll")] public static extern IntPtr GetModuleHandle(string n);
 
     public static readonly IntPtr PerMonitorV2 = new IntPtr(-4);
     public static readonly IntPtr AgentMarker = new IntPtr(0x44564147);   // 'DVAG': input replayed by the agent
 }
 
+/// <summary>Authenticated, encrypted framing shared by agent and forwarder.</summary>
+public static class DvProto
+{
+    public const int NonceLen = 16, MacLen = 32, MaxFrame = 1024;
+    static readonly byte[] Salt = Encoding.ASCII.GetBytes("DeskView-pairing-v2");
+    static readonly Dictionary<string, byte[]> keyCache = new Dictionary<string, byte[]>();
+
+    /// <summary>Long-term key from the pairing code (PBKDF2-SHA256, slow on purpose; cached per code).</summary>
+    public static byte[] PairKey(string code)
+    {
+        code = (code ?? "").Trim().ToUpperInvariant();
+        lock (keyCache)
+        {
+            byte[] k;
+            if (keyCache.TryGetValue(code, out k)) return k;
+            using (var kdf = new Rfc2898DeriveBytes(code, Salt, 200000, HashAlgorithmName.SHA256)) k = kdf.GetBytes(32);
+            keyCache[code] = k;
+            return k;
+        }
+    }
+
+    public static byte[] Hmac(byte[] key, params byte[][] parts)
+    {
+        using (var h = new HMACSHA256(key))
+        {
+            foreach (var p in parts) h.TransformBlock(p, 0, p.Length, null, 0);
+            h.TransformFinalBlock(new byte[0], 0, 0);
+            return h.Hash;
+        }
+    }
+
+    public static byte[] Ascii(string s) { return Encoding.ASCII.GetBytes(s); }
+
+    public static byte[] Random(int n) { var b = new byte[n]; using (var r = RandomNumberGenerator.Create()) r.GetBytes(b); return b; }
+
+    public static bool SameBytes(byte[] a, byte[] b)
+    {
+        if (a == null || b == null || a.Length != b.Length) return false;
+        int d = 0; for (int i = 0; i < a.Length; i++) d |= a[i] ^ b[i]; return d == 0;
+    }
+
+    /// <summary>Reads exactly n bytes or throws (EOF / timeout).</summary>
+    public static byte[] ReadExact(Stream s, int n)
+    {
+        var b = new byte[n]; int got = 0;
+        while (got < n) { int r = s.Read(b, got, n - got); if (r <= 0) throw new IOException("connection closed"); got += r; }
+        return b;
+    }
+
+    /// <summary>Per-session keys: [0] = AES-256 key, [1] = HMAC key.</summary>
+    public static byte[][] SessionKeys(byte[] pairKey, byte[] nonceAgent, byte[] nonceViewer)
+    {
+        return new[] { Hmac(pairKey, Ascii("enc"), nonceAgent, nonceViewer), Hmac(pairKey, Ascii("mac"), nonceAgent, nonceViewer) };
+    }
+
+    public static void WriteFrame(Stream s, byte[][] keys, ulong seq, string message)
+    {
+        byte[] iv = Random(16), ct;
+        using (var aes = Aes.Create())
+        {
+            aes.Key = keys[0]; aes.IV = iv; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+            using (var enc = aes.CreateEncryptor()) { var pt = Encoding.UTF8.GetBytes(message); ct = enc.TransformFinalBlock(pt, 0, pt.Length); }
+        }
+        var seqBytes = BitConverter.GetBytes(seq);
+        var tag = Hmac(keys[1], seqBytes, iv, ct);
+        int len = 8 + 16 + ct.Length + MacLen;
+        var frame = new byte[2 + len];
+        frame[0] = (byte)(len >> 8); frame[1] = (byte)len;
+        Buffer.BlockCopy(seqBytes, 0, frame, 2, 8);
+        Buffer.BlockCopy(iv, 0, frame, 10, 16);
+        Buffer.BlockCopy(ct, 0, frame, 26, ct.Length);
+        Buffer.BlockCopy(tag, 0, frame, 26 + ct.Length, MacLen);
+        s.Write(frame, 0, frame.Length);
+    }
+
+    /// <summary>Reads, authenticates and decrypts one frame; seq must exceed lastSeq. Throws on anything wrong.</summary>
+    public static string ReadFrame(Stream s, byte[][] keys, ref ulong lastSeq)
+    {
+        var hdr = ReadExact(s, 2);
+        int len = (hdr[0] << 8) | hdr[1];
+        if (len < 8 + 16 + 16 + MacLen || len > MaxFrame) throw new InvalidDataException("bad frame length");
+        var body = ReadExact(s, len);
+        int ctLen = len - 8 - 16 - MacLen;
+        var seqBytes = new byte[8]; var iv = new byte[16]; var ct = new byte[ctLen]; var tag = new byte[MacLen];
+        Buffer.BlockCopy(body, 0, seqBytes, 0, 8); Buffer.BlockCopy(body, 8, iv, 0, 16);
+        Buffer.BlockCopy(body, 24, ct, 0, ctLen); Buffer.BlockCopy(body, 24 + ctLen, tag, 0, MacLen);
+        if (!SameBytes(tag, Hmac(keys[1], seqBytes, iv, ct))) throw new InvalidDataException("bad frame MAC");
+        ulong seq = BitConverter.ToUInt64(seqBytes, 0);
+        if (seq <= lastSeq) throw new InvalidDataException("replayed frame");
+        lastSeq = seq;
+        using (var aes = Aes.Create())
+        {
+            aes.Key = keys[0]; aes.IV = iv; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+            using (var dec = aes.CreateDecryptor()) return Encoding.UTF8.GetString(dec.TransformFinalBlock(ct, 0, ct.Length));
+        }
+    }
+}
+
 public class DeskViewAgent
 {
     public int Port = 9002;
-    public string Code = "";                    // pairing code the viewer must present
-    public string[] AllowedIps = new string[0];  // empty = any address on the LAN (code still required)
+    public string Code = "";                     // pairing code the viewer must know
+    public volatile string[] AllowedIps = new string[0];   // empty = any address the firewall lets through
     public volatile int TL, TT, TW = 1, TH = 1;  // streamed monitor, physical pixels
     public volatile int VL, VR;                  // local desktop left/right
     public volatile bool AvoidLeftEdge, AvoidRightEdge;  // outer edges Deskflow links to the other machine
-    public volatile string RequestedMonitor;     // set by "S"; the host restarts its stream for it
     public volatile string Status = "idle";
     public volatile string Client = "";
     public int Moves, Buttons, Keys;             // counters (diagnostics / tests)
 
+    string requestedMonitor;
     TcpListener listener;
     Thread thread;
     volatile bool stopping;
+    TcpClient active;                             // the authenticated session (one at a time)
+    readonly object sessionLock = new object();
     readonly HashSet<int> heldButtons = new HashSet<int>();
     readonly HashSet<string> heldKeys = new HashSet<string>();
+    readonly Dictionary<string, int> failures = new Dictionary<string, int>();
+    readonly Dictionary<string, DateTime> lockedUntil = new Dictionary<string, DateTime>();
+
+    /// <summary>Monitor the viewer asked for since the last call (atomic take), or null.</summary>
+    public string TakeRequestedMonitor() { return Interlocked.Exchange(ref requestedMonitor, null); }
 
     public void Start()
     {
@@ -75,7 +187,7 @@ public class DeskViewAgent
         stopping = false;
         listener = new TcpListener(IPAddress.Any, Port);
         listener.Start();
-        thread = new Thread(Run) { IsBackground = true, Name = "DeskViewAgent" };
+        thread = new Thread(AcceptLoop) { IsBackground = true, Name = "DeskViewAgent" };
         thread.Start();
         Status = "listening on " + Port;
     }
@@ -84,47 +196,84 @@ public class DeskViewAgent
     {
         stopping = true;
         try { listener.Stop(); } catch { }
+        lock (sessionLock) { if (active != null) try { active.Close(); } catch { } }
         if (thread != null) thread.Join(2000);
         thread = null;
+        ReleaseAll();
     }
 
-    void Run()
+    void AcceptLoop()
     {
-        DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
         while (!stopping)
         {
             TcpClient c;
             try { c = listener.AcceptTcpClient(); } catch { if (stopping) return; Thread.Sleep(200); continue; }
-            try { Serve(c); } catch { }
-            finally { ReleaseAll(); try { c.Close(); } catch { } Client = ""; Status = "listening on " + Port; }
+            // Each connection on its own thread, so a slow or hostile peer can't hold the door shut.
+            var t = new Thread(() => Serve(c)) { IsBackground = true, Name = "DeskViewAgentSession" };
+            t.Start();
         }
+    }
+
+    bool IsLockedOut(string ip)
+    {
+        lock (failures) { DateTime until; return lockedUntil.TryGetValue(ip, out until) && DateTime.UtcNow < until; }
+    }
+
+    void Fail(string ip)
+    {
+        lock (failures)
+        {
+            int n; failures.TryGetValue(ip, out n); failures[ip] = ++n;
+            if (n >= 5) { lockedUntil[ip] = DateTime.UtcNow.AddMinutes(1); failures[ip] = 0; }
+        }
+        Status = "refused " + ip;
     }
 
     void Serve(TcpClient c)
     {
-        string ip = ((IPEndPoint)c.Client.RemoteEndPoint).Address.ToString();
-        if (AllowedIps.Length > 0 && Array.IndexOf(AllowedIps, ip) < 0) { Status = "refused " + ip; return; }
-        c.NoDelay = true;
-        var stream = c.GetStream();
-        var reader = new StreamReader(stream, Encoding.UTF8);
-        var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
-        c.ReceiveTimeout = 10000;
-        string hello = reader.ReadLine();
-        if (hello == null || !hello.StartsWith("HELLO ") || !FixedEquals(hello.Substring(6).Trim(), Code)) { writer.WriteLine("NO"); Status = "bad code from " + ip; return; }
-        writer.WriteLine("OK");
-        c.ReceiveTimeout = 30000;                 // viewer pings every few seconds
-        Client = ip; Status = "controlled by " + ip;
-        string line;
-        while (!stopping && (line = reader.ReadLine()) != null) Handle(line, writer);
+        string ip = "";
+        bool authed = false;
+        try
+        {
+            ip = ((IPEndPoint)c.Client.RemoteEndPoint).Address.ToString();
+            var allowed = AllowedIps;
+            if ((allowed.Length > 0 && Array.IndexOf(allowed, ip) < 0) || IsLockedOut(ip) || string.IsNullOrEmpty(Code)) { Status = "refused " + ip; return; }
+            c.NoDelay = true;
+            c.ReceiveTimeout = 5000; c.SendTimeout = 5000;      // handshake deadline
+            var s = c.GetStream();
+            var key = DvProto.PairKey(Code);
+
+            var nonceA = DvProto.Random(DvProto.NonceLen);
+            s.Write(DvProto.Ascii("DV2\n"), 0, 4); s.Write(nonceA, 0, nonceA.Length);
+            var nonceV = DvProto.ReadExact(s, DvProto.NonceLen);
+            var proofV = DvProto.ReadExact(s, DvProto.MacLen);
+            if (!DvProto.SameBytes(proofV, DvProto.Hmac(key, DvProto.Ascii("viewer"), nonceA, nonceV))) { Fail(ip); return; }
+            var proofA = DvProto.Hmac(key, DvProto.Ascii("agent"), nonceV, nonceA);
+            s.Write(proofA, 0, proofA.Length);
+            lock (failures) failures.Remove(ip);
+            var keys = DvProto.SessionKeys(key, nonceA, nonceV);
+
+            // One controller at a time: a new authenticated session replaces the old one.
+            lock (sessionLock) { if (active != null) try { active.Close(); } catch { } active = c; }
+            ReleaseAll();
+            authed = true;
+            c.ReceiveTimeout = 30000;                             // the viewer pings every few seconds
+            Client = ip; Status = "controlled by " + ip;
+            ulong lastSeq = 0;
+            while (!stopping) Handle(DvProto.ReadFrame(s, keys, ref lastSeq));
+        }
+        catch (InvalidDataException) { if (!authed) Fail(ip); }
+        catch { }
+        finally
+        {
+            bool wasActive;
+            lock (sessionLock) { wasActive = active == c; if (wasActive) active = null; }
+            if (wasActive) { ReleaseAll(); Client = ""; Status = "listening on " + Port; }
+            try { c.Close(); } catch { }
+        }
     }
 
-    static bool FixedEquals(string a, string b)
-    {
-        if (string.IsNullOrEmpty(b) || a.Length != b.Length) return false;
-        int d = 0; for (int i = 0; i < a.Length; i++) d |= a[i] ^ b[i]; return d == 0;
-    }
-
-    void Handle(string line, StreamWriter writer)
+    void Handle(string line)
     {
         var p = line.Split(' ');
         try
@@ -138,19 +287,21 @@ public class DeskViewAgent
                     // Keep off outer edges that Deskflow links to the other machine, or it would switch.
                     if (AvoidRightEdge && x >= VR - 2) x = VR - 3;
                     if (AvoidLeftEdge && x <= VL + 1) x = VL + 2;
+                    DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
                     DvNative.SetCursorPos(x, y);   // no hook event: Deskflow and the portal don't react
-                    Moves++;
+                    Interlocked.Increment(ref Moves);
                     break;
                 }
-                case "B": Button(int.Parse(p[1]), p[2] == "1"); Buttons++; break;
+                case "B": Button(int.Parse(p[1]), p[2] == "1"); Interlocked.Increment(ref Buttons); break;
                 case "W": Mouse(0x0800, int.Parse(p[1])); break;
                 case "H": Mouse(0x1000, int.Parse(p[1])); break;
-                case "K": Key(ushort.Parse(p[1]), ushort.Parse(p[2]), p[3] == "1", p[4] == "1"); Keys++; break;
-                case "S": RequestedMonitor = p.Length > 1 ? p[1] : null; break;
-                case "P": writer.WriteLine("PONG"); break;
+                case "K": Key(ushort.Parse(p[1]), ushort.Parse(p[2]), p[3] == "1", p[4] == "1"); Interlocked.Increment(ref Keys); break;
+                case "S": if (p.Length > 1 && p[1].Length <= 16) Interlocked.Exchange(ref requestedMonitor, p[1]); break;
+                case "P": break;                                       // keep-alive
             }
         }
         catch (FormatException) { }
+        catch (OverflowException) { }
         catch (IndexOutOfRangeException) { }
     }
 
@@ -198,19 +349,24 @@ public class DeskViewForwarder
     public int Port = 9002;
     public volatile int VidL, VidT, VidW = 1, VidH = 1;   // where the remote picture is on this machine (physical px)
     public volatile bool Active;                          // forward input only while viewing
-    public bool AcceptInjected;                           // tests only: also forward synthetic input
-    public volatile int PendingHotkey;                    // vk of a physical Ctrl+Alt+0..9 / D press (0 = none); caller resets it
+    public bool AcceptInjected;                           // tests only: also treat synthetic input as physical
     public volatile bool HotkeysEnabled = true;           // detect DeskView hotkeys from the physical keyboard only
     public volatile string Status = "idle";
     public volatile bool Connected;
 
+    int pendingHotkey;                                    // vk of a physical Ctrl+Alt+0..9 / D press
     Thread hookThread, netThread;
     volatile bool stopping;
     DvNative.HookProc mouseProc, keyProc;
     IntPtr mouseHook, keyHook, mod;
     readonly BlockingCollection<string> queue = new BlockingCollection<string>(new ConcurrentQueue<string>(), 4096);
-    bool ctrl, alt;
+    bool ctrl, alt;                                       // tracked while we swallow keys (async state is stale then)
     int lastNx = -1, lastNy = -1;
+    readonly bool[] forwardedDown = new bool[5];          // buttons whose press went to the remote machine
+    bool wasForwarding;
+
+    /// <summary>The DeskView hotkey pressed since the last call (atomic take), or 0.</summary>
+    public int TakeHotkey() { return Interlocked.Exchange(ref pendingHotkey, 0); }
 
     public void Start()
     {
@@ -230,27 +386,42 @@ public class DeskViewForwarder
 
     void Enqueue(string s) { if (Connected) queue.TryAdd(s); }
 
+    /// <summary>Forwarding right now: viewing and the encrypted link is up. Otherwise input stays local.</summary>
+    bool Forwarding { get { return Active && Connected; } }
+
+    void InstallHooks()
+    {
+        if (mouseHook != IntPtr.Zero) DvNative.UnhookWindowsHookEx(mouseHook);
+        if (keyHook != IntPtr.Zero) DvNative.UnhookWindowsHookEx(keyHook);
+        mouseHook = DvNative.SetWindowsHookEx(14, mouseProc, mod, 0);   // WH_MOUSE_LL
+        keyHook = DvNative.SetWindowsHookEx(13, keyProc, mod, 0);       // WH_KEYBOARD_LL
+        if (mouseHook == IntPtr.Zero || keyHook == IntPtr.Zero) Status = "input hook failed (error " + Marshal.GetLastWin32Error() + ")";
+    }
+
     void HookLoop()
     {
         DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
         mouseProc = MouseHook; keyProc = KeyHook;
         mod = DvNative.GetModuleHandle(null);
-        mouseHook = DvNative.SetWindowsHookEx(14, mouseProc, mod, 0);   // WH_MOUSE_LL
-        keyHook = DvNative.SetWindowsHookEx(13, keyProc, mod, 0);       // WH_KEYBOARD_LL
+        InstallHooks();
         var t = new System.Windows.Forms.Timer { Interval = 100 };
         DateTime lastReinstall = DateTime.Now;
         t.Tick += delegate
         {
             if (stopping) { Application.ExitThread(); return; }
-            // Stay ahead of Deskflow's hooks (it re-hooks whenever its core restarts) so our hotkeys work
-            // even while Deskflow has the cursor on the other machine. Not while forwarding a key stroke.
-            if (!Active && (DateTime.Now - lastReinstall).TotalSeconds > 5)
+            bool fwd = Forwarding;
+            if (fwd != wasForwarding)
             {
-                lastReinstall = DateTime.Now;
-                DvNative.UnhookWindowsHookEx(mouseHook); DvNative.UnhookWindowsHookEx(keyHook);
-                mouseHook = DvNative.SetWindowsHookEx(14, mouseProc, mod, 0);
-                keyHook = DvNative.SetWindowsHookEx(13, keyProc, mod, 0);
+                // Started or stopped forwarding: modifier tracking restarts from the real keyboard state, and
+                // anything still held on the remote side is let go.
+                wasForwarding = fwd;
+                ctrl = (DvNative.GetAsyncKeyState(0x11) & 0x8000) != 0;
+                alt = (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
+                if (!fwd) for (int b = 0; b < 5; b++) forwardedDown[b] = false;
             }
+            // Re-register now and then so our hooks run before Deskflow's (it re-hooks when its core restarts)
+            // and come back if Windows dropped them after a slow callback. Not while forwarding a stroke.
+            if (!fwd && (DateTime.Now - lastReinstall).TotalSeconds > 5) { lastReinstall = DateTime.Now; InstallHooks(); }
         };
         t.Start();
         Application.Run();
@@ -262,30 +433,42 @@ public class DeskViewForwarder
     {
         while (!stopping)
         {
-            if (string.IsNullOrEmpty(Peer)) { Thread.Sleep(500); continue; }
+            if (string.IsNullOrEmpty(Peer) || string.IsNullOrEmpty(Code)) { Thread.Sleep(500); continue; }
             TcpClient c = null;
             try
             {
-                c = new TcpClient { NoDelay = true };
+                c = new TcpClient(Peer.Contains(":") ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork) { NoDelay = true };
                 var ar = c.BeginConnect(Peer, Port, null, null);
                 if (!ar.AsyncWaitHandle.WaitOne(3000)) throw new IOException("connect timeout");
                 c.EndConnect(ar);
+                c.ReceiveTimeout = 5000; c.SendTimeout = 5000;
                 var s = c.GetStream();
-                var w = new StreamWriter(s, new UTF8Encoding(false)) { NewLine = "\n" };
-                var r = new StreamReader(s, Encoding.UTF8);
-                w.WriteLine("HELLO " + Code); w.Flush();
-                c.ReceiveTimeout = 5000;
-                string ans = r.ReadLine();
-                if (ans != "OK") { Status = "pairing code rejected by " + Peer; Thread.Sleep(5000); continue; }
+                var key = DvProto.PairKey(Code);
+                var magic = DvProto.ReadExact(s, 4);
+                if (Encoding.ASCII.GetString(magic) != "DV2\n") throw new IOException("not a DeskView v2 agent (update the other machine)");
+                var nonceA = DvProto.ReadExact(s, DvProto.NonceLen);
+                var nonceV = DvProto.Random(DvProto.NonceLen);
+                var proofV = DvProto.Hmac(key, DvProto.Ascii("viewer"), nonceA, nonceV);
+                s.Write(nonceV, 0, nonceV.Length); s.Write(proofV, 0, proofV.Length);
+                byte[] proofA;
+                try { proofA = DvProto.ReadExact(s, DvProto.MacLen); }
+                catch (IOException) { Status = "pairing code rejected by " + Peer; Thread.Sleep(15000); continue; }
+                if (!DvProto.SameBytes(proofA, DvProto.Hmac(key, DvProto.Ascii("agent"), nonceV, nonceA)))
+                { Status = "the other machine could not prove the pairing code - not connecting"; Thread.Sleep(15000); continue; }
+                var keys = DvProto.SessionKeys(key, nonceA, nonceV);
                 string drained; while (queue.TryTake(out drained)) { }
-                Connected = true; Status = "connected to " + Peer;
-                if (!string.IsNullOrEmpty(Monitor)) { w.WriteLine("S " + Monitor); w.Flush(); }
+                ulong seq = 0;
+                Connected = true; Status = "connected to " + Peer + " (encrypted)";
+                if (!string.IsNullOrEmpty(Monitor)) DvProto.WriteFrame(s, keys, ++seq, "S " + Monitor);
                 DateTime lastPing = DateTime.Now;
                 while (!stopping)
                 {
+                    // The agent sends nothing after the handshake, so "readable" means it closed the link:
+                    // notice within 100 ms, so input goes back to this machine instead of into a dead link.
+                    if (c.Client.Poll(0, SelectMode.SelectRead) && c.Available == 0) throw new IOException("the other machine closed the link");
                     string msg;
-                    if (queue.TryTake(out msg, 500)) { w.WriteLine(msg); while (queue.TryTake(out msg)) w.WriteLine(msg); w.Flush(); }
-                    if ((DateTime.Now - lastPing).TotalSeconds > 5) { w.WriteLine("P"); w.Flush(); lastPing = DateTime.Now; }
+                    if (queue.TryTake(out msg, 100)) { DvProto.WriteFrame(s, keys, ++seq, msg); while (queue.TryTake(out msg)) DvProto.WriteFrame(s, keys, ++seq, msg); }
+                    if ((DateTime.Now - lastPing).TotalSeconds > 5) { DvProto.WriteFrame(s, keys, ++seq, "P"); lastPing = DateTime.Now; }
                 }
             }
             catch (Exception e) { Status = "not connected (" + e.Message + ")"; }
@@ -296,12 +479,24 @@ public class DeskViewForwarder
 
     bool InPicture(int x, int y) { return x >= VidL && x < VidL + VidW && y >= VidT && y < VidT + VidH; }
 
+    static int ButtonOf(int msg, uint mouseData)
+    {
+        switch (msg)
+        {
+            case 0x0201: case 0x0202: return 0;
+            case 0x0204: case 0x0205: return 1;
+            case 0x0207: case 0x0208: return 2;
+            case 0x020B: case 0x020C: return (mouseData >> 16) == 1 ? 3 : 4;
+        }
+        return -1;
+    }
+
     IntPtr MouseHook(int code, IntPtr w, IntPtr l)
     {
         IntPtr prev = DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
         try
         {
-            if (code >= 0 && Active)
+            if (code >= 0 && Forwarding)
             {
                 var m = (DvNative.MSLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(DvNative.MSLLHOOKSTRUCT));
                 bool injected = (m.flags & 0x1) != 0;
@@ -318,19 +513,21 @@ public class DeskViewForwarder
                             if (nx != lastNx || ny != lastNy) { lastNx = nx; lastNy = ny; Enqueue("M " + nx + " " + ny); }
                         }
                     }
-                    else if (inPic)
+                    else if (msg == 0x020A || msg == 0x020E)             // wheel: only over the picture
                     {
-                        switch (msg)
+                        if (inPic) { Enqueue((msg == 0x020A ? "W " : "H ") + (short)(m.mouseData >> 16)); return (IntPtr)1; }
+                    }
+                    else
+                    {
+                        int b = ButtonOf(msg, m.mouseData);
+                        bool down = msg == 0x0201 || msg == 0x0204 || msg == 0x0207 || msg == 0x020B;
+                        if (b >= 0)
                         {
-                            case 0x0201: Enqueue("B 0 1"); break;  case 0x0202: Enqueue("B 0 0"); break;
-                            case 0x0204: Enqueue("B 1 1"); break;  case 0x0205: Enqueue("B 1 0"); break;
-                            case 0x0207: Enqueue("B 2 1"); break;  case 0x0208: Enqueue("B 2 0"); break;
-                            case 0x020B: Enqueue("B " + ((m.mouseData >> 16) == 1 ? 3 : 4) + " 1"); break;
-                            case 0x020C: Enqueue("B " + ((m.mouseData >> 16) == 1 ? 3 : 4) + " 0"); break;
-                            case 0x020A: Enqueue("W " + (short)(m.mouseData >> 16)); break;
-                            case 0x020E: Enqueue("H " + (short)(m.mouseData >> 16)); break;
+                            // A press over the picture goes remote, and so does its release wherever it happens;
+                            // a press outside stays local together with its release. No stuck buttons either way.
+                            if (down && inPic) { forwardedDown[b] = true; Enqueue("B " + b + " 1"); return (IntPtr)1; }
+                            if (!down && forwardedDown[b]) { forwardedDown[b] = false; Enqueue("B " + b + " 0"); return (IntPtr)1; }
                         }
-                        return (IntPtr)1;                                 // click/wheel happens remotely only
                     }
                 }
             }
@@ -348,23 +545,31 @@ public class DeskViewForwarder
             bool down = ((int)w == 0x0100 || (int)w == 0x0104);   // WM_KEYDOWN / WM_SYSKEYDOWN
             int vk = (int)k.vkCode;
             bool physical = (!injected || AcceptInjected) && k.extra != DvNative.AgentMarker;
+            bool fwd = Forwarding;
             if (physical)
             {
+                // Ctrl and the LEFT Alt only: AltGr arrives as LCtrl+RAlt and must keep typing { [ ] } etc.
                 if (vk == 0xA2 || vk == 0xA3 || vk == 0x11) ctrl = down;
-                if (vk == 0xA4 || vk == 0xA5 || vk == 0x12) alt = down;
+                if (vk == 0xA4) alt = down;
+                if (vk == 0xA5) alt = false;
+                // While forwarding we swallow Ctrl/Alt, so Windows' key state is stale: use what we tracked.
+                // Otherwise ask Windows - our flags can miss releases (secure desktop, Win+L, Ctrl+Alt+Del).
+                bool tracked = fwd || AcceptInjected;
+                bool ctrlNow = tracked ? ctrl : (DvNative.GetAsyncKeyState(0x11) & 0x8000) != 0;
+                bool altNow = tracked ? alt : (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
                 // DeskView's own hotkeys (Ctrl+Alt+0..9 / D) are always handled here, on the machine you sit at,
                 // never forwarded - and keys that Deskflow injects from the other machine never count.
-                if (HotkeysEnabled && ctrl && alt && ((vk >= 0x30 && vk <= 0x39) || vk == 0x44))
+                if (HotkeysEnabled && ctrlNow && altNow && ((vk >= 0x30 && vk <= 0x39) || vk == 0x44))
                 {
                     if (down)
                     {
-                        if (Active) { Enqueue("K 162 29 0 0"); Enqueue("K 163 29 1 0"); Enqueue("K 164 56 0 0"); Enqueue("K 165 56 1 0"); }
-                        PendingHotkey = vk;
+                        if (fwd) { Enqueue("K 162 29 0 0"); Enqueue("K 163 29 1 0"); Enqueue("K 164 56 0 0"); Enqueue("K 165 56 1 0"); }
+                        Interlocked.Exchange(ref pendingHotkey, vk);
                     }
                     return (IntPtr)1;
                 }
             }
-            if (Active && physical)
+            if (fwd && physical)
             {
                 bool ext = (k.flags & 0x1) != 0;
                 Enqueue("K " + vk + " " + k.scanCode + " " + (ext ? 1 : 0) + " " + (down ? 1 : 0));

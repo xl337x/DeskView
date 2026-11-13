@@ -20,7 +20,9 @@ irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 ```
 
 - You'll get **one** administrator prompt (only if something is missing): two firewall rules limited to your
-  local network (UDP 9000 video, TCP 9002 control), plus FFmpeg / Deskflow via `winget` if they aren't installed.
+  local network (UDP 9000 video, TCP 9002 control), and Deskflow if it isn't installed (via `winget`, or straight
+  from Deskflow's GitHub releases when winget is missing). FFmpeg is downloaded next to DeskView if needed - no admin.
+- If Deskflow was never set up on this machine, setup asks whether it is the server (or pass `-Role Server|Client`).
 - On the Deskflow **server** the installer prints a **pairing code** (also in the tray menu).
   On the **client** it asks for that code. To pass it directly:
 
@@ -63,6 +65,29 @@ Resolutions and scaling are detected automatically: the other machine's resoluti
 monitors being plugged in or changed are picked up within seconds, and everything works in physical pixels
 (mixed 100% / 150% scaling is handled).
 
+## Security
+
+- **Video** is encrypted (SRT, AES-256) with a key derived from the pairing code; without it nobody on the network
+  can watch your screen.
+- **Control** (keyboard/mouse into the other machine) uses mutual authentication - the pairing code is never sent:
+  both sides prove they know it (PBKDF2-SHA256 + HMAC challenges over fresh nonces) - then every message is
+  AES-256 encrypted and HMAC-authenticated with a sequence number (no replay or tampering). Only the Deskflow
+  partner's address is accepted, unauthenticated peers get 5 s, and 5 wrong attempts lock an address out for a minute.
+- The 12-character pairing code comes from a cryptographic random generator.
+
+## Performance
+
+Measured on an i7-1255U laptop (Intel Iris Xe):
+
+| | |
+|---|---|
+| Mouse hand-over into / out of the portal | under a millisecond (same as a Deskflow edge switch) |
+| Picture delay (loopback, wired) | ~150-250 ms |
+| Sender CPU | frames stay on the GPU (Quick Sync / NVENC / AMF): ~3x less CPU than copying them back |
+| Viewer CPU | GPU decoding (D3D11): ~3.5x less CPU than software decoding |
+
+The viewer reconnects automatically if the stream stalls or drops.
+
 ## Tests
 
 ```powershell
@@ -85,4 +110,6 @@ Removes DeskView, its startup entry, settings and firewall rules. Deskflow and F
 - Windows 10 1607+ / Windows 11 on both machines, Deskflow 1.27+, both on the same local network.
 - Wired is smoothest; Wi-Fi works with a little more delay.
 - Windows' secure screens (lock screen, UAC prompts) can't be captured and show black while they're up.
+- A window can't be dragged from one machine's screen onto the other machine's monitor (they are separate
+  computers); sending single windows and second virtual screens are on the roadmap.
 - Two machines today (one Deskflow server + one client).

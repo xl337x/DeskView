@@ -6,7 +6,7 @@
 // machine at the matching height. When Deskflow hands control back (read from its log), the cursor is placed
 // just outside the portal monitor on the side it left from.
 //
-// Deskflow links required (written by DeskView-Control.ps1):
+// Deskflow links required (written by DeskView.ps1):
 //   portal has a monitor on its left  -> LOCAL: right = REMOTE ; REMOTE: left = LOCAL
 //   portal has a monitor on its right -> LOCAL: left = REMOTE  ; REMOTE: right = LOCAL
 using System;
@@ -34,6 +34,7 @@ public class DeskViewPortal
     [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
     [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int i, int v);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 
     const int WH_MOUSE_LL = 14, WM_MOUSEMOVE = 0x200;
     static readonly IntPtr Marker = new IntPtr(0x44565057);   // tags our own injected nudge
@@ -77,6 +78,29 @@ public class DeskViewPortal
     readonly StringBuilder logTail = new StringBuilder();
     static readonly Regex SwitchRx = new Regex("switch from \"(?<from>[^\"]+)\" to \"(?<to>[^\"]+)\" at (?<x>-?\\d+),(?<y>-?\\d+)");
 
+    // --- child processes die with DeskView (Windows job object with KILL_ON_JOB_CLOSE) ---
+    [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_LIMIT_INFORMATION { public long a, b; public uint LimitFlags; public UIntPtr c, d; public uint e; public UIntPtr f; public uint g, h; }
+    [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong a, b, c, d, e, f; }
+    [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION Basic; public IO_COUNTERS Io; public UIntPtr p, q, r, s; }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr a, string name);
+    [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr job, int cls, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, uint len);
+    [DllImport("kernel32.dll")] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    static IntPtr job;
+
+    /// <summary>Kill this process automatically when DeskView exits, however it exits (even a crash).</summary>
+    public static void KillWithMe(System.Diagnostics.Process p)
+    {
+        if (p == null) return;
+        if (job == IntPtr.Zero)
+        {
+            job = CreateJobObject(IntPtr.Zero, null);
+            var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            info.Basic.LimitFlags = 0x2000;   // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            SetInformationJobObject(job, 9, ref info, (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
+        }
+        try { AssignProcessToJobObject(job, p.Handle); } catch { }
+    }
+
     /// <summary>Make the calling thread use physical pixel coordinates.</summary>
     public static void UsePhysicalPixels() { SetThreadDpiAwarenessContext(PerMonitorV2); }
 
@@ -86,6 +110,8 @@ public class DeskViewPortal
         const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000, WS_EX_APPWINDOW = 0x40000;
         int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW);
+        // ffplay's -alwaysontop doesn't stick: make the picture topmost ourselves (HWND_TOPMOST, no move/size/activate).
+        SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
     }
 
     public void Start()

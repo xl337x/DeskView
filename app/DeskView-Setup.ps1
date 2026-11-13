@@ -1,4 +1,4 @@
-<#
+﻿<#
   DeskView setup - the same command on both machines (Deskflow installed and connected first).
 
     powershell -ExecutionPolicy Bypass -File DeskView-Setup.ps1 [-Source <folder | https://.../app>] [-PairCode CODE]
@@ -15,6 +15,7 @@ param(
     [string]$Source,
     [string]$PairCode,
     [switch]$Uninstall,
+    [ValidateSet('', 'Server', 'Client')] [string]$Role = '',   # only needed if Deskflow was never set up on this machine
     [switch]$Elevated,            # internal: the part that needs administrator rights
     [switch]$RemoveRules          # internal: elevated part of uninstall
 )
@@ -33,21 +34,34 @@ if ($Elevated) {
     Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     New-NetFirewallRule -DisplayName 'DeskView video (UDP 9000)' -Direction Inbound -Protocol UDP -LocalPort $videoPort -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
     New-NetFirewallRule -DisplayName 'DeskView control (TCP 9002)' -Direction Inbound -Protocol TCP -LocalPort $controlPort -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
-    if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-        Write-Host 'Installing FFmpeg...'
-        winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements --silent | Out-Host
-    }
+    $failed = 0
     if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) {
         Write-Host 'Installing Deskflow...'
-        winget install --id Deskflow.Deskflow -e --accept-source-agreements --accept-package-agreements --silent | Out-Host
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            # --source winget: on fresh machines the msstore source can fail and abort the whole install
+            winget install --id Deskflow.Deskflow -e --source winget --accept-source-agreements --accept-package-agreements --silent | Out-Host
+        }
+        if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) {
+            # No winget (or it failed): the official installer straight from Deskflow's GitHub releases.
+            try {
+                $rel = Invoke-RestMethod 'https://api.github.com/repos/deskflow/deskflow/releases/latest' -UseBasicParsing
+                $asset = $rel.assets | ? { $_.name -match 'win.*x64.*\.msi$' } | Select -First 1
+                $msi = Join-Path $env:TEMP $asset.name
+                Invoke-WebRequest $asset.browser_download_url -OutFile $msi -UseBasicParsing
+                $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+                Write-Host "Deskflow $($rel.tag_name) installer exit code $($p.ExitCode)"
+            } catch { Write-Host "Deskflow download failed: $_" }
+        }
+        if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) { Write-Host 'Deskflow is NOT installed.'; $failed++ }
     }
-    exit 0
+    exit $failed
 }
 
 function Run-Elevated([string]$switchName) {
     $self = Join-Path $env:TEMP 'DeskView-Setup-elevated.ps1'
     Copy-Item $PSCommandPath $self -Force
-    $p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$self`" -$switchName"
+    try { $p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$self`" -$switchName" }
+    catch { Write-Warning 'Administrator approval was declined.'; return $false }
     $p.ExitCode -eq 0
 }
 
@@ -65,6 +79,18 @@ if ($Uninstall) {
     Write-Host '== DeskView uninstall ==' -ForegroundColor Cyan
     Stop-DeskView
     if (Test-Path $startupLink) { [IO.File]::Delete($startupLink) }
+    # Give Deskflow its own settings back: no portal, and the screen layout from before DeskView.
+    $ini = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'
+    if (Test-Path $ini) {
+        $text = [IO.File]::ReadAllText($ini) -replace '(?m)^portal(Pid)?=.*\r?\n?', ''
+        $backup = Join-Path $settingsDir 'deskflow-layout-backup.json'
+        if (Test-Path $backup) {
+            $b = Get-Content $backup -Raw | ConvertFrom-Json
+            if ($null -ne $b.Content) { [IO.File]::WriteAllText($b.ServerConf, $b.Content) }
+            if (-not $b.ExternalConfig) { $text = $text -replace '(?m)^externalConfig=true', 'externalConfig=false' }
+        }
+        [IO.File]::WriteAllText($ini, $text, (New-Object Text.UTF8Encoding $false))
+    }
     foreach ($dir in $installDir, $settingsDir) { if (Test-Path $dir) { [IO.Directory]::Delete($dir, $true) } }
     if (Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue) {
         Write-Host 'Removing the firewall rules (a Windows prompt will appear)...'
@@ -78,14 +104,13 @@ if ($Uninstall) {
 Write-Host '== DeskView setup ==' -ForegroundColor Cyan
 if (-not $Source) { $Source = if (Test-Path (Join-Path $PSScriptRoot 'DeskView.ps1')) { $PSScriptRoot } else { $defaultSource } }
 
-# 1. Administrator part - only when something is actually missing.
+# 1. Administrator part - only when something is actually missing (firewall rules, Deskflow).
 $rules = @(Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue).Count
-$needAdmin = $rules -lt 2 -or -not (Get-Command ffmpeg -ErrorAction SilentlyContinue) -or -not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')
+$needAdmin = $rules -lt 2 -or -not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')
 if ($needAdmin) {
-    Write-Host 'Step 1/4: administrator approval for firewall rules / FFmpeg / Deskflow (a Windows prompt will appear)...'
-    if (-not (Run-Elevated 'Elevated')) { Write-Warning 'The administrator part did not finish - the other machine may not reach this one.' }
-    $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
-} else { Write-Host 'Step 1/4: firewall rules, FFmpeg and Deskflow already in place.' }
+    Write-Host 'Step 1/4: administrator approval for firewall rules / Deskflow (a Windows prompt will appear)...'
+    if (-not (Run-Elevated 'Elevated')) { Write-Warning 'The administrator part did not fully succeed (see above) - check Deskflow is installed and the firewall allows DeskView.' }
+} else { Write-Host 'Step 1/4: firewall rules and Deskflow already in place.' }
 
 # 2. Copy the program.
 Write-Host "Step 2/4: installing to $installDir (from $Source)"
@@ -97,26 +122,66 @@ foreach ($f in $files) {
     elseif ((Resolve-Path $Source).Path -ne (Resolve-Path $installDir).Path) { Copy-Item (Join-Path $Source $f) $dst -Force }
 }
 
+# FFmpeg: use one on PATH if it can do what DeskView needs (screen capture, SRT, ffplay), else a private
+# copy next to DeskView (no admin, no winget needed).
+function Test-FFmpeg([string]$exe) {
+    if (-not $exe -or -not (Test-Path $exe) -or -not (Test-Path (Join-Path (Split-Path $exe) 'ffplay.exe'))) { return $false }
+    $filters = & $exe -hide_banner -filters 2>$null | Out-String; $protocols = & $exe -hide_banner -protocols 2>$null | Out-String
+    ($filters -match '\bddagrab\b') -and ($protocols -match '(?m)^\s*srt\s*$')
+}
+$ffDir = Join-Path $installDir 'ffmpeg'
+$pathFF = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+if (-not (Test-FFmpeg $pathFF) -and -not (Test-FFmpeg (Join-Path $ffDir 'ffmpeg.exe'))) {
+    Write-Host '        downloading FFmpeg (about 150 MB, once)...'
+    $zip = Join-Path $env:TEMP 'deskview-ffmpeg.zip'
+    Invoke-WebRequest 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile $zip -UseBasicParsing
+    $tmp = Join-Path $env:TEMP 'deskview-ffmpeg'; if (Test-Path $tmp) { [IO.Directory]::Delete($tmp, $true) }
+    Expand-Archive $zip $tmp -Force
+    New-Item -ItemType Directory -Force $ffDir | Out-Null
+    Get-ChildItem $tmp -Recurse -Include ffmpeg.exe, ffplay.exe, ffprobe.exe | Copy-Item -Destination $ffDir -Force
+    [IO.Directory]::Delete($tmp, $true); [IO.File]::Delete($zip)
+    if (-not (Test-Path (Join-Path $ffDir 'ffplay.exe'))) { throw 'FFmpeg download failed.' }
+}
+
 # 3. Role and pairing.
 Write-Host 'Step 3/4: pairing'
 New-Item -ItemType Directory -Force $settingsDir | Out-Null
 $settingsFile = Join-Path $settingsDir 'settings.json'
 $settings = if (Test-Path $settingsFile) { Get-Content $settingsFile -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
 $ini = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'
-$isServer = [bool](Select-String -Path $ini -Pattern '^coreMode=2' -ErrorAction SilentlyContinue)
+if ($Role) { $isServer = $Role -eq 'Server' }
+else {
+    $mode = if (Test-Path $ini) { [regex]::Match([IO.File]::ReadAllText($ini), '(?m)^coreMode=(\d)').Groups[1].Value } else { '' }
+    if ($mode -eq '2') { $isServer = $true }
+    elseif ($mode -eq '1') { $isServer = $false }
+    else {
+        # Deskflow is new here (no settings yet, or no role chosen), so it can't tell us the role.
+        Write-Host '   Deskflow is not set up as Server or Client on this machine yet.' -ForegroundColor Yellow
+        $isServer = (Read-Host '   Is this the machine whose keyboard and mouse you share (the Deskflow SERVER)? [y/N]') -match '^[yY]'
+        $Role = if ($isServer) { 'Server' } else { 'Client' }
+        Write-Host "   After setup, open Deskflow, choose $Role there too, and connect the two machines."
+    }
+}
 if ($isServer) {
     if (-not $settings.PairCode) {
-        $code = -join ((1..8) | % { '23456789ABCDEFGHJKMNPQRSTUVWXYZ'[(Get-Random -Maximum 31)] })
-        $settings | Add-Member PairCode $code -Force
+        $alphabet = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'; $bytes = New-Object byte[] 12
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose()
+        $settings | Add-Member PairCode (-join ($bytes | % { $alphabet[$_ % $alphabet.Length] })) -Force
     }
     Write-Host ''
     Write-Host "   This machine is the Deskflow SERVER. Pairing code:  $($settings.PairCode)" -ForegroundColor Green
     Write-Host '   Enter it when installing on the other machine (it is also in the DeskView tray menu).'
 } else {
     if (-not $PairCode -and $settings.PairCode) { $PairCode = $settings.PairCode }
-    if (-not $PairCode) { $PairCode = Read-Host '   This machine is a Deskflow CLIENT. Enter the pairing code shown on the server' }
+    $codePattern = '^[2-9A-HJKMNP-Z]{8,12}$'
+    while (-not $PairCode -or $PairCode.Trim().ToUpper() -notmatch $codePattern) {
+        if ($PairCode) { Write-Host "   '$PairCode' is not a DeskView pairing code (8-12 letters/digits, as shown on the server)." -ForegroundColor Yellow }
+        if (-not [Environment]::UserInteractive) { throw 'Pass the pairing code with -PairCode (no one to ask).' }
+        $PairCode = Read-Host '   This machine is a Deskflow CLIENT. Enter the pairing code shown on the server'
+    }
     $settings | Add-Member PairCode ($PairCode.Trim().ToUpper()) -Force
 }
+if ($Role) { $settings | Add-Member Role $Role -Force }
 $settings | ConvertTo-Json | Set-Content $settingsFile -Encoding UTF8
 
 # 4. Start now and at every sign-in.
