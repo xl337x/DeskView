@@ -1,8 +1,8 @@
-# Loopback tests for DeskView-Input.cs (agent + forwarder) on one machine - no second machine needed.
+﻿# Loopback tests for DeskView-Input.cs (agent + forwarder) on one machine - no second machine needed.
 # Opens a small test window and moves the mouse / types for a few seconds. Uses TCP port 9102 on localhost.
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -Path (Join-Path $PSScriptRoot '..\app\DeskView-Input.cs') -ReferencedAssemblies System.Windows.Forms
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -Path (Join-Path $PSScriptRoot '..\app\DeskView-Input.cs') -ReferencedAssemblies System.Windows.Forms, System.Drawing
 Add-Type @'
 using System; using System.Runtime.InteropServices;
 public static class TI {

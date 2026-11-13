@@ -55,6 +55,10 @@ namespace DeskView
 
         // --- clipboard ----------------------------------------------------------------------------------------------
         public bool ClipboardEnabled { get; set; } = true;
+        /// <summary>Client: keep the mouse pointer visible (Windows hides it when no mouse is plugged in).</summary>
+        public bool AlwaysShowPointer { get; set; } = true;
+        /// <summary>True when DeskView turned Mouse Keys on (so turning the option off undoes only our change).</summary>
+        public bool PointerForcedByUs { get; set; }
         public int ClipboardSizeMb { get; set; } = 3;
 
         // --- the other computer's options (corners, half-duplex keys, modifier remapping) -------------------------

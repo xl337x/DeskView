@@ -80,12 +80,25 @@ namespace DeskView
             if (S.Role == Role.Client) forwarder.Peer = Peer() ?? "";
             forwarder.Start();
             if (S.Role == Role.Client) S.ClientView = 0;      // start on this computer's own screen
+            ApplyPointer();
             ApplyEngine(true);
             layoutSig = LayoutSignature();
             Media.ServiceSenders();
             SyncPlayers();
             timer.Tick += (o, e) => Tick();
             timer.Start();
+        }
+
+        /// <summary>Client: Windows hides the pointer when no mouse is plugged in - the pointer moved over the
+        /// network then disappears. Mouse Keys makes Windows always draw it.</summary>
+        public void ApplyPointer()
+        {
+            try
+            {
+                if (S.Role == Role.Client && S.AlwaysShowPointer) { if (DeskViewPointer.ForceVisible()) { S.PointerForcedByUs = true; S.Save(); } }
+                else if (S.PointerForcedByUs) { DeskViewPointer.Release(); S.PointerForcedByUs = false; S.Save(); }
+            }
+            catch { }
         }
 
         public void Shutdown()

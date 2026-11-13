@@ -149,7 +149,8 @@ function Format-Host([string]$a) { if ($a -match '^::ffff:(\d+\.\d+\.\d+\.\d+)$'
 $role = Get-Role
 $localName = Get-LocalName
 $remoteName = Get-RemoteName
-if (-not $S.PairCode) {
+# Client: Windows hides the pointer when no mouse is plugged in (it is moved over the network) - always show it.
+if ($role -eq 'Client') { try { [void][DeskViewPointer]::ForceVisible() } catch {} }if (-not $S.PairCode) {
     # The server makes the code; the client gets it once during setup (DeskView-Setup.ps1).
     if ($role -eq 'Server') { $S.PairCode = New-PairCode }
     Save-Settings
