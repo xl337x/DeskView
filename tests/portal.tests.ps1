@@ -55,13 +55,19 @@ function Trip($label, $startX, $y, $inDir, $outDir, $want, $backX) {
         Start-Sleep -Milliseconds 300
     }
     [void][PT]::GetCursorPos([ref]$pt)
+    # Where control came back, as Deskflow reports it (the test keeps moving for a few steps after that).
+    $out = Since $n0 "to `"$env:COMPUTERNAME`"" | Select -First 1
+    $b = if ($out) { [regex]::Match($out.Line, 'at (-?\d+),(-?\d+)').Groups | Select -Skip 1 | % { [int]$_.Value } } else { $null }
+    if ($b) { $pt.X = $b[0]; $pt.Y = $b[1] }
+    # Entering lands at the point crossed: within a step or two of the remote edge (exactly on it with the
+    # edge-based portal, a few pixels in with Deskflow's native portal).
     $ok = switch ($want) {
         'none'  { -not $e }
-        'left'  { $e -and $e[0] -eq 0 -and (Near $e[1] $y) -and (Near $pt.X $backX) -and (Near $pt.Y $y) }
-        'right' { $e -and $e[0] -gt 100 -and (Near $e[1] $y) -and (Near $pt.X $backX) -and (Near $pt.Y $y) }
+        'left'  { $e -and $e[0] -le 25 -and (Near $e[1] $y) -and $b -and (Near $pt.X $backX 3) -and (Near $pt.Y $y) }
+        'right' { $e -and $e[0] -gt 100 -and (Near $e[1] $y) -and $b -and (Near $pt.X $backX 3) -and (Near $pt.Y $y) }
     }
     if ($ok) { $script:pass++ } else { $script:fail++ }
-    "{0}  {1}`n      {2} entry: {3}   final cursor: {4},{5}" -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $label, $remote, $(if ($e) { "$($e[0]),$($e[1])" } else { 'none' }), $pt.X, $pt.Y
+    "{0}  {1}`n      {2} entry: {3}   back at: {4},{5}" -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $label, $remote, $(if ($e) { "$($e[0]),$($e[1])" } else { 'none' }), $pt.X, $pt.Y
 }
 
 function Test-Monitor($scr) {
@@ -71,10 +77,10 @@ function Test-Monitor($scr) {
     $hasLeft = $P.Left -gt $VL; $hasRight = $P.Right -lt $VR
     $y1 = $P.Top + [int]($P.Height * 0.3); $y2 = $P.Top + [int]($P.Height * 0.6)
     if ($hasLeft) {
-        Trip "enter from the left at y=$y1, leave $remote's left edge -> back at $($P.Left - 2),$y1" ($P.Left - 120) $y1 1 -1 'left' ($P.Left - 2)
+        Trip "enter from the left at y=$y1, leave $remote's left edge -> back beside it at x~$($P.Left - 1)" ($P.Left - 120) $y1 1 -1 'left' ($P.Left - 1)
     }
     if ($hasRight) {
-        Trip "enter from the right at y=$y2, leave $remote's right edge -> back at $($P.Right + 1),$y2" ($P.Right + 120) $y2 -1 1 'right' ($P.Right + 1)
+        Trip "enter from the right at y=$y2, leave $remote's right edge -> back beside it at x~$($P.Right)" ($P.Right + 120) $y2 -1 1 'right' ($P.Right)
     }
     if ($hasLeft -and $VR -gt $P.Right) {
         Trip "outer right edge must not switch" ($VR - 160) $y1 1 0 'none' 0

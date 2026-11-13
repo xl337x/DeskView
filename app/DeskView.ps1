@@ -266,14 +266,42 @@ function Set-DeskflowLinks([bool]$leftToRemote, [bool]$rightToRemote) {
     Start-Process 'C:\Program Files\Deskflow\deskflow.exe' -WindowStyle Minimized
     $script:reinstallAt = (Get-Date).AddSeconds(4)
 }
+# Deskflow built with DeskView (github.com/xl337x/deskflow, branch deskview) handles the portal itself:
+# we only tell it where the picture is (computer_<name>/portal in its settings) - no mouse hook, no edge links.
+$nativePortal = Test-Path 'C:\Program Files\Deskflow\deskview.txt'
+function Set-NativePortal([string]$value) {
+    $ini = [IO.File]::ReadAllText($deskflowIni)
+    $section = "[computer_$remoteName]"
+    $line = if ($value) { "portal=`"$value`"" } else { '' }
+    $i = $ini.IndexOf($section)
+    if ($i -lt 0) { if (-not $value) { return }; $ini = $ini.TrimEnd() + "`r`n`r`n$section`r`nname=$remoteName`r`n$line`r`n" }
+    else {
+        $start = $i + $section.Length
+        $next = $ini.IndexOf("`n[", $start); if ($next -lt 0) { $next = $ini.Length }
+        $body = $ini.Substring($start, $next - $start)
+        $body = [regex]::Replace($body, '(?m)^portal=.*\r?\n?', '')
+        if ($line) { $body = $body.TrimEnd("`r", "`n") + "`r`n$line`r`n" }
+        $ini = $ini.Substring(0, $start) + $body + $ini.Substring($next)
+    }
+    [IO.File]::WriteAllText($deskflowIni, $ini, (New-Object Text.UTF8Encoding $false))
+}
 function Update-PortalVideo {
     if (-not $script:playerScreen) { return }
     $pr = Get-PictureRect $script:playerScreen
+    if ($nativePortal) { if ($S.Monitor -ne 'Off' -and $S.Interactive) { Set-NativePortal "$($pr.L),$($pr.T),$($pr.W),$($pr.H)" }; return }
     $portal.VidT = $pr.T; $portal.VidH = $pr.H
     $portal.RemoteH = if ($script:remoteRes) { $script:remoteRes.H } else { 0 }
 }
 function Update-Portal {
     $scr = if ($S.Monitor -ne 'Off') { Get-Monitor $S.Monitor }
+    if ($nativePortal) {
+        $portal.Enabled = $false
+        if (-not $scr -or -not $S.Interactive) { Set-NativePortal ''; Set-DeskflowLinks $false $true; return }
+        Set-DeskflowLinks $false $false          # the portal is the way in and out; no edge links
+        $script:playerScreen = $scr
+        Update-PortalVideo
+        return
+    }
     if (-not $scr -or -not $S.Interactive) { $portal.Enabled = $false; Set-DeskflowLinks $false $true; return }
     $all = [System.Windows.Forms.Screen]::AllScreens
     $b = $scr.Bounds
@@ -487,7 +515,7 @@ if ($Show) { $want = if ($role -eq 'Server') { Resolve-Monitor $Show } else { $S
 [void](Get-Peer)
 if ($role -eq 'Client') { $forwarder.Peer = $S.Peer }   # the server only uses the hook for its hotkeys
 $forwarder.Start()                       # hotkeys on both roles; input forwarding on the client while viewing
-if ($role -eq 'Server') { $portal.Start() }
+if ($role -eq 'Server' -and -not $nativePortal) { $portal.Start() }
 Start-Sender
 if ($role -eq 'Client' -and $S.Monitor -ne 'Off') { $S.Monitor = 'Off'; Save-Settings }   # start on this machine's own screen
 Apply-Monitor
