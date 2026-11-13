@@ -1,4 +1,4 @@
-﻿<#
+<#
   DeskView setup - the same command on both machines.
 
     powershell -ExecutionPolicy Bypass -File DeskView-Setup.ps1 [-Source <folder | https://.../app>] [-PairCode CODE]
@@ -194,6 +194,15 @@ else {
         $isServer = (Read-Host '   Is this the machine whose keyboard and mouse you share (the SERVER)? [y/N]') -match '^[yY]'
         $Role = if ($isServer) { 'Server' } else { 'Client' }
         Write-Host "   Then set up the other machine the same way (as the other role)."
+    }
+}
+if ($isServer -and (Test-Path $ini)) {
+    # The server's engine runs as this user, not SYSTEM: as SYSTEM it can't read this user's clipboard.
+    $iniText = [IO.File]::ReadAllText($ini)
+    if ($iniText -notmatch '(?m)^elevate=false') {
+        $iniText = if ($iniText -match '(?m)^\[daemon\]') { [regex]::Replace(($iniText -replace '(?m)^elevate=.*\r?\n', ''), '(?m)^\[daemon\]\s*$', "[daemon]`r`nelevate=false", 1) }
+                   else { $iniText.TrimEnd() + "`r`n`r`n[daemon]`r`nelevate=false`r`n" }
+        [IO.File]::WriteAllText($ini, $iniText, (New-Object Text.UTF8Encoding $false))
     }
 }
 if ($isServer) {
