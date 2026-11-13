@@ -526,6 +526,9 @@ function Update-Portals {
             $pr = $rects[$i]; $others = @($rects | ? { $_ -ne $pr })
             $e = "$($pr.L),$($pr.T),$($pr.W),$($pr.H),$(Get-ExitSides $pr $others)"
             if ($pls[$i].RemoteRect) { $e += "@$($pls[$i].RemoteRect)" }
+            # An older sender doesn't say where its screen is: its screen 1 is the main screen, which Windows puts
+            # at 0,0. Without this the whole remote desktop is mapped onto the picture (wrong when it has 2+ screens).
+            elseif ($pls[$i].RemoteRes -and $pls[$i].RemoteN -eq 1) { $e += "@0,0,$($pls[$i].RemoteRes.W),$($pls[$i].RemoteRes.H)" }
             $e
         }
         # The user's engine layout (edge links) is left exactly as it is: portals work on top of it.

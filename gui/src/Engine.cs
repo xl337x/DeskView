@@ -264,6 +264,8 @@ namespace DeskView
                 var r = rects[i];
                 var e = $"{r.X},{r.Y},{r.Width},{r.Height},{ExitSides(r, rects.Where((x, j) => j != i).ToList())}";
                 if (pls[i].RemoteRect != null) e += "@" + pls[i].RemoteRect;
+                // an older sender doesn't say where its screen is: its screen 1 is the main screen, at 0,0
+                else if (pls[i].RemoteRes.HasValue && pls[i].RemoteN == 1) e += $"@0,0,{pls[i].RemoteRes.Value.Width},{pls[i].RemoteRes.Value.Height}";
                 entries.Add(e);
             }
             return string.Join(";", entries);
