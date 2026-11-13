@@ -65,7 +65,7 @@ namespace DeskView
     public class Player
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
-        public Size? RemoteRes; public string RemoteRect; public bool Passive; public int Fails; public bool Legacy; public bool EverLive;
+        public Size? RemoteRes; public string RemoteRect; public bool Passive; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
         public DateTime LastStart = DateTime.MinValue; public long ReportLen = -1; public DateTime ReportGrew = DateTime.Now;
         public bool Live => RemoteRes.HasValue && P != null && !P.HasExited;
     }
@@ -148,9 +148,12 @@ namespace DeskView
         }
 
         /// <summary>One listener per screen, kept alive with back-off when it keeps failing.</summary>
+        /// <summary>DESKVIEW_NOMEDIA=1: no video processes at all (tests of everything else).</summary>
+        public static readonly bool NoMedia = Environment.GetEnvironmentVariable("DESKVIEW_NOMEDIA") == "1";
+
         public void ServiceSenders()
         {
-            if (ffmpeg == null) return;
+            if (ffmpeg == null || NoMedia) return;
             var outputs = DeskViewDxgi.DdagrabOutputs();
             var screens = Tools.OrderedScreens();
             var wanted = new HashSet<int>();
@@ -193,6 +196,7 @@ namespace DeskView
         void StartPlayer(Player pl, string peer)
         {
             Kill(pl.P); pl.P = null;
+            if (NoMedia) return;
             if (ffplay == null || string.IsNullOrEmpty(peer)) return;
             string prof = Profile; var r = pl.Screen.Bounds;
             int port = S.VideoPort + pl.RemoteN - 1;
@@ -220,7 +224,12 @@ namespace DeskView
             {
                 if (pl.P == null || pl.P.HasExited)
                 {
-                    if (pl.P != null && pl.RemoteRes == null) pl.Fails++;
+                    if (pl.P != null && pl.RemoteRes == null)
+                    {
+                        pl.Fails++;
+                        // say so instead of leaving an empty monitor: the other computer is not sending this screen
+                        if (pl.Fails == 3 && !pl.WarnedDown) { pl.WarnedDown = true; Notice?.Invoke($"No picture from {S.RemoteName} screen {pl.RemoteN} yet. Make sure DeskView is running there (same pairing code) and it is on the network.", true); }
+                    }
                     pl.P = null;
                     if ((DateTime.Now - pl.LastStart).TotalSeconds >= 2) StartPlayer(pl, peer);
                     continue;
@@ -242,6 +251,7 @@ namespace DeskView
                 if (info != null && (pl.RemoteRes != info.Value.size || pl.RemoteRect != info.Value.rect))
                 {
                     pl.RemoteRes = info.Value.size; pl.RemoteRect = info.Value.rect; pl.Fails = 0; pl.EverLive = true; changed = true;
+                    if (!pl.Announced) { pl.Announced = true; pl.WarnedDown = false; Notice?.Invoke($"{S.RemoteName} screen {pl.RemoteN} is now on {pl.Key} ({info.Value.size.Width}x{info.Value.size.Height})", false); }
                     if (pl.Legacy && !warnedLegacy) { warnedLegacy = true; Notice?.Invoke("The other computer runs an old DeskView: its picture is not encrypted. Update it.", true); }
                 }
             }

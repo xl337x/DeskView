@@ -31,12 +31,13 @@ namespace DeskView.UI
             Size = new Size(1000, 720); MinimumSize = new Size(860, 560); Font = Theme.Body; BackColor = Theme.Page;
             AutoScaleMode = AutoScaleMode.Dpi;
 
-            var brand = new Label { Text = "  DeskView", Font = new Font("Segoe UI Semibold", 15f), ForeColor = Color.White, AutoSize = false, Size = new Size(210, 44), TextAlign = ContentAlignment.MiddleLeft };
+            var brand = new Label { UseMnemonic = false, Text = "  DeskView", Font = new Font("Segoe UI Semibold", 15f), ForeColor = Color.White, AutoSize = false, Size = new Size(210, 44), TextAlign = ContentAlignment.MiddleLeft };
             nav.Controls.Add(brand);
-            var sub = new Label { Text = "    one desk, every screen", Font = Theme.Small, ForeColor = Theme.SidebarText, AutoSize = false, Size = new Size(210, 26) };
+            var sub = new Label { UseMnemonic = false, Text = "    one desk, every screen", Font = Theme.Small, ForeColor = Theme.SidebarText, AutoSize = false, Size = new Size(210, 26) };
             nav.Controls.Add(sub);
 
             Add("Overview", OverviewPage);
+            Add("What you can do", GuidePage);
             Add("Screens", ScreensPage);
             Add("Connection", ConnectionPage);
             Add("Switching & input", InputPage);
@@ -57,7 +58,7 @@ namespace DeskView.UI
         void Add(string name, Func<Control> page)
         {
             pages[name] = page;
-            var item = new Label { Text = "    " + name, AutoSize = false, Size = new Size(210, 40), TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.SidebarText, Font = Theme.Body, Cursor = Cursors.Hand, Margin = new Padding(0) };
+            var item = new Label { UseMnemonic = false, Text = "    " + name, AutoSize = false, Size = new Size(210, 40), TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.SidebarText, Font = Theme.Body, Cursor = Cursors.Hand, Margin = new Padding(0) };
             item.MouseEnter += (o, e) => { if (current != name) item.BackColor = Theme.SidebarHover; };
             item.MouseLeave += (o, e) => { if (current != name) item.BackColor = Theme.Sidebar; };
             item.Click += (o, e) => ShowPage(name);
@@ -125,6 +126,44 @@ namespace DeskView.UI
             return page;
         }
 
+        // ================================================================================================ What you can do
+        Control GuidePage()
+        {
+            string me = S.Role == Role.Client ? "this laptop" : S.ComputerName, other = Other;
+            var page = Theme.PageBody("What you can do", "Step by step: every DeskView feature and exactly how to use it.");
+            Control How(string title, string what, params string[] steps)
+            {
+                var c = Theme.Card(title, what);
+                for (int i = 0; i < steps.Length; i++) c.Controls.Add(Theme.Label($"{i + 1}.  {steps[i]}"));
+                return c;
+            }
+            page.Controls.Add(How("Move any window from any laptop to any screen",
+                $"One desktop across both computers: a window that lives on {other} can be dragged onto any monitor that shows {other}, and {me}'s own windows onto any of its own screens.",
+                $"Screens page: click a monitor and pick which of {other}'s screens it shows (each of {other}'s screens can be on a different monitor).",
+                $"Move the mouse onto that monitor - the mouse is now on {other}.",
+                $"Grab the window's title bar (for example a PowerShell tab on {other}) and drag it to another monitor showing {other}: it moves there like on a normal multi-monitor PC.",
+                $"Want more places for {other}'s windows? Give the laptop extra virtual screens (Screens page > More screens on a laptop), then show each one on a monitor.",
+                "Shortcut: Ctrl+Alt+1..9 puts the other computer's main screen on monitor 1..9, Ctrl+Alt+D cycles it through your monitors, Ctrl+Alt+0 hides it."));
+            page.Controls.Add(How("Work on the other computer",
+                "Your keyboard and mouse follow the pointer, across both computers.",
+                $"Move the mouse off the edge set on the Connection page to go to {other}; move it back to return.",
+                $"Or move it onto a monitor showing {other}'s picture: it lands at the same spot on {other}.",
+                "Scroll Lock locks the mouse to the computer it is on."));
+            page.Controls.Add(How("Copy and paste between the computers",
+                "Text, pictures and files you copy on one computer can be pasted on the other.",
+                "Copy as usual (Ctrl+C) on one computer.",
+                "Move the mouse to the other computer and paste (Ctrl+V). Clipboard size and on/off: Switching & input page."));
+            page.Controls.Add(How("Send files by drag and drop",
+                $"Drop files or folders onto {other}'s picture to send them, encrypted with the pairing code.",
+                $"Drag files from Explorer and hold them over a monitor showing {other}: it lights up \"Drop to send\".",
+                $"Release: they arrive in Downloads\\DeskView on {other}, with a notification there. Nothing is ever overwritten."));
+            page.Controls.Add(How("Use the server from the laptop",
+                "Two-way: the laptop can also view and control the server's screens.",
+                "On the laptop press Ctrl+Alt+1..9 to show the server's screen 1..9 full screen and control it with the laptop's own keyboard and touchpad.",
+                "Ctrl+Alt+0 comes back to the laptop."));
+            return page;
+        }
+
         static FlowLayoutPanel Wrap(params Control[] cs) { var p = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Margin = new Padding(0, 4, 0, 0) }; foreach (var c in cs) p.Controls.Add(c); return p; }
 
         // ================================================================================================ Screens
@@ -162,9 +201,9 @@ namespace DeskView.UI
         {
             var c = Theme.Card("More screens on a laptop", "A laptop can get extra virtual screens that Windows treats as real monitors. They show up on the other computer's " +
                 "monitors, so its windows can be dragged across all of them. Run on the laptop (administrator approval once):");
-            var box = new TextBox { ReadOnly = true, Width = 640, Font = new Font("Consolas", 9f), Text = "$DeskViewVirtualScreens=2; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex" };
+            var box = new TextBox { ReadOnly = true, Width = 640, Font = new Font("Consolas", 9f), Text = "iwr https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 -OutFile $env:TEMP\\deskview-install.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\\deskview-install.ps1 -VirtualScreens 2" };
             c.Controls.Add(box);
-            c.Controls.Add(Theme.Button("Copy command", (o, e) => Clipboard.SetText(box.Text)));
+            c.Controls.Add(Theme.Button("Copy command", (o, e) => Theme.CopyText(box.Text)));
             c.Controls.Add(Theme.Hint("Then arrange the new screens in Windows Settings > System > Display (for example to the right of the laptop screen)."));
             return c;
         }
@@ -324,7 +363,7 @@ namespace DeskView.UI
             var box = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Font = new Font("Consolas", 9f), Size = new Size(700, 420), BackColor = Color.White };
             page.Controls.Add(box);
             page.Controls.Add(Wrap(Theme.Button("Open log folder", (o, e) => Process.Start("explorer.exe", AppSettings.Dir)),
-                                  Theme.Button("Copy", (o, e) => { if (box.Text.Length > 0) Clipboard.SetText(box.Text); })));
+                                  Theme.Button("Copy", (o, e) => { if (box.Text.Length > 0) Theme.CopyText(box.Text); })));
             onRefresh = () =>
             {
                 var lines = CoreControl.TailLog(200);

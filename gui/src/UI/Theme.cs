@@ -28,11 +28,11 @@ namespace DeskView.UI
         public static Font Heading => new Font("Segoe UI Semibold", 12f);
 
         public static Label Label(string text, Font font = null, Color? color = null) =>
-            new Label { Text = text, AutoSize = true, Font = font ?? Body, ForeColor = color ?? Text, Margin = new Padding(0, 4, 0, 4) };
+            new Label { UseMnemonic = false, Text = text, AutoSize = true, Font = font ?? Body, ForeColor = color ?? Text, Margin = new Padding(0, 4, 0, 4) };
 
         /// <summary>Wrapped explanatory text (the "guided" part of every page).</summary>
         public static Label Hint(string text, int width = 640) =>
-            new Label { Text = text, AutoSize = true, MaximumSize = new Size(width, 0), Font = Small, ForeColor = Muted, Margin = new Padding(0, 0, 0, 10) };
+            new Label { UseMnemonic = false, Text = text, AutoSize = true, MaximumSize = new Size(width, 0), Font = Small, ForeColor = Muted, Margin = new Padding(0, 0, 0, 10) };
 
         public static Button Button(string text, EventHandler onClick, bool primary = false)
         {
@@ -100,9 +100,15 @@ namespace DeskView.UI
         /// <summary>Coloured dot + text, for status lines.</summary>
         public static Label Status(string text, Color color)
         {
-            var l = new Label { AutoSize = true, Font = Body, ForeColor = Text, Margin = new Padding(0, 4, 0, 4), Text = "      " + text };
+            var l = new Label { UseMnemonic = false, AutoSize = true, Font = Body, ForeColor = Text, Margin = new Padding(0, 4, 0, 4), Text = "      " + text };
             l.Paint += (o, e) => { using (var b = new SolidBrush(color)) e.Graphics.FillEllipse(b, 2, l.Height / 2 - 5, 10, 10); };
             return l;
         }
-    }
+
+        /// <summary>Copies text, retrying while another program holds the clipboard; never throws.</summary>
+        public static bool CopyText(string text)
+        {
+            try { Clipboard.SetDataObject(text ?? "", true, 10, 100); return true; }
+            catch (Exception) { MessageBox.Show("The clipboard is busy (another program is using it). Try again in a moment.", "DeskView"); return false; }
+        }    }
 }

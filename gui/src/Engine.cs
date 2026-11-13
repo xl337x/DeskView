@@ -160,7 +160,7 @@ namespace DeskView
                 var name = ResolveMonitor(want);
                 if (name == null) { Notice?.Invoke("There is no monitor " + want + ".", true); return; }
                 SetScreen(name, 1);
-                Notice?.Invoke($"{S.RemoteName} shown on {name}", false);
+                Notice?.Invoke($"Connecting to {S.RemoteName}'s screen for {name}...", false);
             }
             else if (int.TryParse(want, out int n) && n >= 1 && n <= 9)
             {
