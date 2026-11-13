@@ -86,7 +86,8 @@ if ($script:clipOk) {
     Check 'assistant: Copy puts the code on the clipboard' ((Clip) -eq $codeLabel.Text)
 }
 $next.PerformClick(); Pump 300; Shot $wiz 'wizard-5-screens'
-$combo = All-Controls $wiz | ? { $_ -is [Windows.Forms.ComboBox] -and $_.Items.Count -gt 2 } | Select -First 1
+# the monitor list: 'none' + one entry per monitor (2 entries on a one-screen laptop)
+$combo = All-Controls $wiz | ? { $_ -is [Windows.Forms.ComboBox] -and $_.Visible -and $_.Items.Count -ge 2 } | Select -Last 1
 $combo.SelectedIndex = 1
 $next.PerformClick(); Pump 600; Shot $wiz 'wizard-6-ready'
 Check 'assistant: last step offers Finish' ($next.Text -eq 'Finish')
