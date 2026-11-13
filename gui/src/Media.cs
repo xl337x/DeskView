@@ -214,7 +214,9 @@ namespace DeskView
                 ["SDL_WINDOWS_DPI_AWARENESS"] = "permonitorv2",
                 ["FFREPORT"] = "file=" + pl.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32",
             };
-            pl.P = Start(ffplay, $"-hide_banner -loglevel error {hw}-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext -probesize 32768 -analyzeduration 0 -an -noborder -alwaysontop {vf}-left {r.X} -top {r.Y} -x {r.Width} -y {r.Height} -window_title DeskView \"{url}\"", env);
+            // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
+            string probe = pl.Legacy || pl.Fails >= 2 ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
+            pl.P = Start(ffplay, $"-hide_banner -loglevel error {hw}-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext {probe} -an -noborder -alwaysontop {vf}-left {r.X} -top {r.Y} -x {r.Width} -y {r.Height} -window_title DeskView \"{url}\"", env);
             pl.LastStart = DateTime.Now; pl.ReportLen = -1; pl.ReportGrew = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
         }
 
