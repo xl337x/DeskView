@@ -873,6 +873,17 @@ $tray.add_DoubleClick({
 [void](Get-Peer)
 if ($role -eq 'Client') { $forwarder.Peer = $S.Peer }   # the server only uses the hook for its hotkeys (classic engine)
 Apply-Builtin
+# Server: the engine must run as this user, not SYSTEM - as SYSTEM it can't read this user's clipboard, so
+# nothing copied here ever reached the other computer. Fixed once here (with one engine restart).
+if ($role -eq 'Server' -and (Test-Path $engineIni)) {
+    $iniText = Read-EngineIni
+    if ($iniText -notmatch '(?m)^elevate=false') {
+        $iniText = if ($iniText -match '(?m)^\[daemon\]') { [regex]::Replace(($iniText -replace '(?m)^elevate=.*\r?\n', ''), '(?m)^\[daemon\]\s*$', "[daemon]`r`nelevate=false", 1) }
+                   else { $iniText.TrimEnd() + "`r`n`r`n[daemon]`r`nelevate=false`r`n" }
+        Write-FileAtomic $engineIni $iniText
+        if ($S.InputEngine -ne 'DeskView') { $cfgLine = "configFile=$($engineIni -replace '\\', '/')"; [void](Send-EngineDaemon @($cfgLine, 'stop')); Start-Sleep -Milliseconds 800; [void](Send-EngineDaemon @($cfgLine, 'start')) }
+    }
+}
 # Never two engines switching at once: with DeskView's own engine the classic one stays stopped.
 if ($S.InputEngine -eq 'DeskView') { [void](Send-EngineDaemon @("configFile=$($engineIni -replace '\\', '/')", 'stop')) }
 $forwarder.Start()                       # hotkeys on both roles; input forwarding on the client while viewing

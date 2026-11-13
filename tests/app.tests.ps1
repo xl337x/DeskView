@@ -49,6 +49,7 @@ try {
     $ini = [IO.File]::ReadAllText($cfgPath)
     Check 'engine settings: server mode, names, both computers declared' ($ini -match '(?m)^coreMode=2' -and $ini -match '(?m)^computerName=DESK' -and $ini -match '(?m)^\[computer_DESK\]' -and $ini -match '(?m)^\[computer_lap\]')
     Check 'engine settings: portal quoted, owner process recorded' ($ini -match '(?m)^portal="3840,0,1920,1080,L@0,0,1920,1080"' -and $ini -match "(?m)^portalPid=$PID\b")
+    Check 'engine settings: the server engine runs as the user (so it can read the clipboard)' ($ini -match '(?m)^\[daemon\]\s*\r?\n\s*elevate=false')
     Check 'engine settings: switching options written' ($ini -match '(?m)^enableSwitchDelay=true' -and $ini -match '(?m)^switchDelay=333')
     Check 'engine settings: layout file referenced with forward slashes' ($ini -match '(?m)^externalConfigFile="[A-Za-z]:/[^"\\]+layout\.conf"')
     $changed = $Core::WriteConfig($s2, '3840,0,1920,1080,L@0,0,1920,1080')
@@ -57,7 +58,7 @@ try {
     Check 'unsafe characters stripped from computer names' ([IO.File]::ReadAllText($cfgPath) -match '(?m)^computerName=DESKx\s*$')
     $client = [Activator]::CreateInstance($Settings); $client.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Client'); $client.ServerAddress = '192.168.1.37'; $client.ComputerName = 'lap'
     [void]$Core::WriteConfig($client, $null); $ini = [IO.File]::ReadAllText($cfgPath)
-    Check 'client settings: client mode, server address, no portal' ($ini -match '(?m)^coreMode=1' -and $ini -match '(?m)^remoteHost=192\.168\.1\.37' -and $ini -notmatch 'portal=')
+    Check 'client settings: client mode, server address, no portal, engine keeps admin rights' ($ini -match '(?m)^coreMode=1' -and $ini -match '(?m)^remoteHost=192\.168\.1\.37' -and $ini -notmatch 'portal=' -and $ini -notmatch 'elevate=false')
 } finally { foreach ($p in $cfgPath, $layoutPath) { if ($saved.ContainsKey($p)) { [IO.File]::WriteAllText($p, $saved[$p]) } } }
 
 # ---------------------------------------------------------------------------------------------- exit sides / monitors

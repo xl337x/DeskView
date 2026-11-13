@@ -78,6 +78,13 @@ namespace DeskView
             Kv("level", s.LogLevel);
             if (s.Role == Role.Server)
             {
+                // Run as the signed-in user, not SYSTEM: as SYSTEM the engine can't read this user's clipboard
+                // (every copy looked "unchanged", nothing reached the other computer).
+                Section("daemon");
+                Kv("elevate", "false");
+            }
+            if (s.Role == Role.Server)
+            {
                 Section("computer_" + me);
                 Kv("name", me);
                 if (other.Length > 0)
