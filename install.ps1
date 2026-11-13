@@ -1,13 +1,12 @@
-<#
-  DeskView installer - downloads the latest DeskView from GitHub and runs its setup.
-
-  Install (PowerShell, on each machine):
-      irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
-
-  With the pairing code (on the Deskflow client), or to uninstall:
-      & ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -PairCode ABCD2345
-      & ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -Uninstall
-#>
+# DeskView installer - downloads the latest DeskView from GitHub and runs its setup.
+# (Line comments on purpose: this file is run through "irm | iex", where a block comment can break.)
+#
+# Install (PowerShell, on each machine):
+#     irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
+#
+# With the pairing code (on the Deskflow client), or to uninstall:
+#     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -PairCode ABCD2345
+#     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -Uninstall
 param(
     [string]$PairCode,
     [switch]$Uninstall,
