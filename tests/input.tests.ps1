@@ -34,6 +34,8 @@ $formScript = @"
 Add-Type -AssemblyName System.Windows.Forms
 `$f = New-Object Windows.Forms.Form; `$f.Text = 'DeskView key test'; `$f.TopMost = `$true; `$f.StartPosition = 'Manual'; `$f.Location = New-Object Drawing.Point $($prim.Left + 200),$($prim.Top + 200); `$f.Size = New-Object Drawing.Size 500,150
 `$t = New-Object Windows.Forms.TextBox; `$t.Dock = 'Fill'; `$t.Multiline = `$true; `$f.Controls.Add(`$t)
+# focus never selects what is there (scaled screens: the focusing click may land beside the box) - typing appends
+`$t.add_GotFocus({ `$t.SelectionStart = `$t.TextLength; `$t.SelectionLength = 0 }); `$f.add_Activated({ `$t.SelectionStart = `$t.TextLength; `$t.SelectionLength = 0 })
 `$tm = New-Object Windows.Forms.Timer; `$tm.Interval = 300; `$tm.add_Tick({ [IO.File]::WriteAllText('$outFile', `$t.Text) }); `$tm.Start()
 `$f.add_Shown({ `$f.Activate(); `$t.Focus() })
 [Windows.Forms.Application]::Run(`$f)
@@ -175,6 +177,8 @@ $agent.Stop(); Start-Sleep -Milliseconds 1500
 # which Windows may refuse to SetForegroundWindow after input was replayed elsewhere)
 [void][TI]::SetCursorPos($prim.Left + 400, $prim.Top + 260); Start-Sleep -Milliseconds 150
 [TI]::Btn(0x0002); [TI]::Btn(0x0004); Start-Sleep -Milliseconds 300
+# End first: on a one-screen machine the earlier remote press/release drag-selects the test text, and 'e' would replace it
+[TI]::Key(0x23, $true); [TI]::Key(0x23, $false); Start-Sleep -Milliseconds 100
 [TI]::Key(0x45, $true); [TI]::Key(0x45, $false); Start-Sleep -Milliseconds 900   # 'e'
 Check 'with the link down, typing still works locally' ((Typed) -eq 'hi!abe') "typed='$(Typed)' connected=$($fw.Connected)"
 
