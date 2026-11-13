@@ -86,7 +86,8 @@ namespace DeskView
         public bool StartEngineOnLaunch { get; set; } = true;
 
         // ------------------------------------------------------------------------------------------------------------------
-        public static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskView");
+        // DESKVIEW_HOME: a separate settings folder (tests use it so they never touch the real settings).
+        public static string Dir => Environment.GetEnvironmentVariable("DESKVIEW_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskView");
         public static string FilePath => Path.Combine(Dir, "app.json");
 
         public static AppSettings Load()

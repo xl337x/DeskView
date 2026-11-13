@@ -134,9 +134,13 @@ namespace DeskView
         // the engine service (its pipe protocol: one "command=argument" line per message)
         // ---------------------------------------------------------------------------------------------------------
         public static string LastError { get; private set; } = "";
+        /// <summary>DESKVIEW_DRYRUN=1: never talk to the engine service; record what would have been sent (tests).</summary>
+        public static readonly bool DryRun = Environment.GetEnvironmentVariable("DESKVIEW_DRYRUN") == "1";
+        public static readonly List<string> Sent = new List<string>();
 
         static bool Send(params string[] commands)
         {
+            if (DryRun) { lock (Sent) Sent.AddRange(commands); return true; }
             try
             {
                 using (var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut))
@@ -178,6 +182,7 @@ namespace DeskView
         /// <summary>The engine's own window would give the service its own settings: close it, DeskView manages the engine now.</summary>
         public static void StopForeignGui()
         {
+            if (DryRun) return;
             foreach (var p in Process.GetProcessesByName("deskflow")) { try { p.Kill(); } catch { } }
         }
 

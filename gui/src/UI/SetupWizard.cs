@@ -12,7 +12,7 @@ namespace DeskView.UI
         readonly Engine engine;
         AppSettings S => engine.S;
         readonly Panel body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(32, 24, 32, 8), BackColor = Theme.Page };
-        readonly Label stepLabel = new Label { Dock = DockStyle.Top, Height = 36, Font = Theme.Small, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(32, 0, 0, 0), BackColor = Theme.Page };
+        readonly Label stepLabel = new Label { UseMnemonic = false, Dock = DockStyle.Top, Height = 36, Font = Theme.Small, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(32, 0, 0, 0), BackColor = Theme.Page };
         readonly Button back, next;
         readonly List<Func<Control>> steps = new List<Func<Control>>();
         readonly List<Func<bool>> validators = new List<Func<bool>>();
@@ -118,8 +118,8 @@ namespace DeskView.UI
             if (role == Role.Server)
             {
                 var p = Page("Pairing code", "Type this code on the client. It keeps the video and remote control private: nobody without it can watch or control either computer.");
-                p.Controls.Add(new Label { Text = code, AutoSize = true, Font = new Font("Consolas", 26f, FontStyle.Bold), ForeColor = Theme.Accent, Margin = new Padding(0, 16, 0, 16) });
-                p.Controls.Add(Theme.Button("Copy", (o, e) => Clipboard.SetText(code)));
+                p.Controls.Add(new Label { UseMnemonic = false, Text = code, AutoSize = true, Font = new Font("Consolas", 26f, FontStyle.Bold), ForeColor = Theme.Accent, Margin = new Padding(0, 16, 0, 16) });
+                p.Controls.Add(Theme.Button("Copy", (o, e) => Theme.CopyText(code)));
                 return p;
             }
             var c = Page("Pairing code", "Type the code the server shows (DeskView on the server: Connection page, or its setup assistant).");

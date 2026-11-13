@@ -1,4 +1,4 @@
-﻿<#
+<#
   DeskView - one keyboard and mouse for several computers, and every computer's screens on any monitor, both ways.
   The same program runs on both machines; the role comes from the keyboard/mouse engine's settings (server or client).
 
@@ -282,7 +282,7 @@ function New-Player([string]$key, $screen, [int]$remoteN) {
     [pscustomobject]@{
         Key = $key; Screen = $screen; RemoteN = $remoteN; P = $null
         Report = Join-Path $env:TEMP ("deskview-ffplay-$($key -replace '[^\w]', '').log")
-        RemoteRes = $null; RemoteRect = $null; Passive = $false; Fails = 0; Legacy = $false
+        RemoteRes = $null; RemoteRect = $null; Passive = $false; Fails = 0; Legacy = $false; Announced = $false; WarnedDown = $false
         Started = $null; LastStart = (Get-Date '2000-01-01'); ReportLen = -1; ReportGrew = (Get-Date)
     }
 }
@@ -594,7 +594,7 @@ function Show-On([string]$want) {
         foreach ($k in @($S.Screens.Keys)) { if ($S.Screens[$k] -eq 1) { $S.Screens.Remove($k) } }
         $S.Screens[$name] = 1; $script:lastOn = $name
         Save-Settings; Sync-Players; Build-Menu
-        Notify "$remoteName shown on $name"
+        Notify "Connecting to $remoteName's screen for $name..."
     } else {
         $name = if (-not $want -or $want -eq 'Off') { 'Off' } elseif ($want -match '^\d$') { $want } else { Notify "Use a monitor number (1-9) or Off." 'Warning'; return }
         if ($name -ne $S.Monitor) { $S.Monitor = $name; Save-Settings; Sync-Players; Build-Menu }
@@ -707,7 +707,14 @@ function Service-Players {
     $changed = $false
     foreach ($pl in @($script:players.Values)) {
         if (-not $pl.P -or $pl.P.HasExited) {
-            if ($pl.P -and -not $pl.RemoteRes) { $pl.Fails++ }
+            if ($pl.P -and -not $pl.RemoteRes) {
+                $pl.Fails++
+                # Say so instead of leaving an empty monitor: the other laptop is not sending this screen.
+                if ($pl.Fails -eq 3 -and -not $pl.WarnedDown) {
+                    $pl.WarnedDown = $true
+                    Notify "No picture from $remoteName screen $($pl.RemoteN) yet. Make sure DeskView is running on $remoteName (same pairing code) and that it is on the network." 'Warning' 8000
+                }
+            }
             $pl.P = $null
             if (((Get-Date) - $pl.LastStart).TotalSeconds -ge 2) { Start-Player $pl }
             continue
@@ -727,6 +734,7 @@ function Service-Players {
         if ($info -and (-not $pl.RemoteRes -or $info.W -ne $pl.RemoteRes.W -or $info.H -ne $pl.RemoteRes.H -or $info.Rect -ne $pl.RemoteRect)) {
             $pl.RemoteRes = [pscustomobject]@{ W = $info.W; H = $info.H }; $pl.RemoteRect = $info.Rect
             $pl.Fails = 0
+            if (-not $pl.Announced) { $pl.Announced = $true; $pl.WarnedDown = $false; Notify "$remoteName screen $($pl.RemoteN) is now on $($pl.Key) ($($info.W)x$($info.H))" }
             if ($pl.Legacy -and -not $script:warnedLegacy) {
                 $script:warnedLegacy = $true
                 Notify "$remoteName runs an old DeskView: its picture is not encrypted. Update it with the install command." 'Warning' 6000
