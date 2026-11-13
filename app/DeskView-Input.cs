@@ -1,4 +1,4 @@
-// DeskView reverse control channel (the direction Deskflow can't do at the same time).
+// DeskView reverse control channel (the direction the engine can't do at the same time).
 //
 //   DeskViewAgent      on the machine being viewed: accepts one authenticated viewer over TCP and replays
 //                      its mouse / keyboard input locally; can be asked which monitor to stream.
@@ -162,7 +162,7 @@ public class DeskViewAgent
     public volatile string[] AllowedIps = new string[0];   // empty = any address the firewall lets through
     public volatile int TL, TT, TW = 1, TH = 1;  // streamed monitor, physical pixels
     public volatile int VL, VR;                  // local desktop left/right
-    public volatile bool AvoidLeftEdge, AvoidRightEdge;  // outer edges Deskflow links to the other machine
+    public volatile bool AvoidLeftEdge, AvoidRightEdge;  // outer edges the engine links to the other machine
     public volatile string Status = "idle";
     public volatile string Client = "";
     public int Moves, Buttons, Keys;             // counters (diagnostics / tests)
@@ -284,11 +284,11 @@ public class DeskViewAgent
                 {
                     int x = TL + (int)Math.Round(int.Parse(p[1]) * (TW - 1) / 65535.0);
                     int y = TT + (int)Math.Round(int.Parse(p[2]) * (TH - 1) / 65535.0);
-                    // Keep off outer edges that Deskflow links to the other machine, or it would switch.
+                    // Keep off outer edges that the engine links to the other machine, or it would switch.
                     if (AvoidRightEdge && x >= VR - 2) x = VR - 3;
                     if (AvoidLeftEdge && x <= VL + 1) x = VL + 2;
                     DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
-                    DvNative.SetCursorPos(x, y);   // no hook event: Deskflow and the portal don't react
+                    DvNative.SetCursorPos(x, y);   // no hook event: the engine and the portal don't react
                     Interlocked.Increment(ref Moves);
                     break;
                 }
@@ -419,7 +419,7 @@ public class DeskViewForwarder
                 alt = (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
                 if (!fwd) for (int b = 0; b < 5; b++) forwardedDown[b] = false;
             }
-            // Re-register now and then so our hooks run before Deskflow's (it re-hooks when its core restarts)
+            // Re-register now and then so our hooks run before the engine's (it re-hooks when its core restarts)
             // and come back if Windows dropped them after a slow callback. Not while forwarding a stroke.
             if (!fwd && (DateTime.Now - lastReinstall).TotalSeconds > 5) { lastReinstall = DateTime.Now; InstallHooks(); }
         };
@@ -558,7 +558,7 @@ public class DeskViewForwarder
                 bool ctrlNow = tracked ? ctrl : (DvNative.GetAsyncKeyState(0x11) & 0x8000) != 0;
                 bool altNow = tracked ? alt : (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
                 // DeskView's own hotkeys (Ctrl+Alt+0..9 / D) are always handled here, on the machine you sit at,
-                // never forwarded - and keys that Deskflow injects from the other machine never count.
+                // never forwarded - and keys that the engine injects from the other machine never count.
                 if (HotkeysEnabled && ctrlNow && altNow && ((vk >= 0x30 && vk <= 0x39) || vk == 0x44))
                 {
                     if (down)

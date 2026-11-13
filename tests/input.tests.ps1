@@ -1,4 +1,4 @@
-﻿# Loopback tests for DeskView-Input.cs (agent + forwarder) on one machine - no second machine needed.
+# Loopback tests for DeskView-Input.cs (agent + forwarder) on one machine - no second machine needed.
 # Opens a small test window and moves the mouse / types for a few seconds. Uses TCP port 9102 on localhost.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -82,7 +82,7 @@ Check 'move maps into the streamed monitor (centre-x, quarter-y)' ([math]::Abs($
 $agent.AvoidRightEdge = $true
 Send $ok 'M 65535 500'; Start-Sleep -Milliseconds 300
 [void][TI]::GetCursorPos([ref]$pt)
-Check 'move keeps off a Deskflow-linked outer edge' ($pt.X -eq $VR - 3) "cursor x=$($pt.X) want $($VR - 3)"
+Check 'move keeps off an engine-linked outer edge' ($pt.X -eq $VR - 3) "cursor x=$($pt.X) want $($VR - 3)"
 $agent.AvoidRightEdge = $false
 
 Send $ok 'S DISPLAY1'; Start-Sleep -Milliseconds 200
@@ -122,7 +122,7 @@ Check 'held Shift released when the viewer disconnects (next a is lowercase)' ((
 
 # address allow-list
 $agent.AllowedIps = [string[]]@('10.9.8.7')
-$x = Connect-V2 'TESTCODE2345'; Check 'only the Deskflow partner address may connect' (-not $x.Ok) "ok=$($x.Ok)"; $x.C.Close()
+$x = Connect-V2 'TESTCODE2345'; Check 'only the connected partner''s address may connect' (-not $x.Ok) "ok=$($x.Ok)"; $x.C.Close()
 $agent.AllowedIps = [string[]]@()
 
 # lock-out after repeated failures
@@ -186,7 +186,7 @@ Check 'Ctrl+Alt+5 detected while not viewing' ($fw.TakeHotkey() -eq 0x35) ''
 $fw.AcceptInjected = $false
 [TI]::Key(0x11, $true); [TI]::Key(0x12, $true); [TI]::Key(0x36, $true); [TI]::Key(0x36, $false); [TI]::Key(0x12, $false); [TI]::Key(0x11, $false)
 Start-Sleep -Milliseconds 400
-Check 'injected Ctrl+Alt+6 (like Deskflow-forwarded keys) is ignored' ($fw.TakeHotkey() -eq 0) ''
+Check 'injected Ctrl+Alt+6 (like keys forwarded from the other computer) is ignored' ($fw.TakeHotkey() -eq 0) ''
 
 $fw.Stop()
 Stop-Process -Id $form.Id -Force

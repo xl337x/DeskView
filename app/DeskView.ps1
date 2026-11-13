@@ -1,18 +1,18 @@
 ﻿<#
-  DeskView - see and control the other machine's screens, in both directions, on top of Deskflow.
-  The same program runs on both machines; the role comes from Deskflow (server or client).
+  DeskView - one keyboard and mouse for several computers, and every computer's screens on any monitor, both ways.
+  The same program runs on both machines; the role comes from the keyboard/mouse engine's settings (server or client).
 
   Every machine streams ALL of its screens (screen n = the n-th monitor from the left, on UDP port 9000+n-1).
 
-  On the Deskflow SERVER (the machine with the keyboard/mouse Deskflow shares):
+  On the SERVER (the machine whose keyboard and mouse are shared):
     - Any local monitor can show any screen of the client (tray: "Monitors"). Moving the mouse onto a monitor
       showing the client hands keyboard and mouse to the client at that spot (the "portal"); the cursor then
       moves across all of the client's screens like a normal multi-monitor desktop, so windows can be
       dragged between them. Leaving the client's edge brings you back beside the picture.
     - Ctrl+Alt+1..9  show the client's screen 1 on local monitor 1..9   Ctrl+Alt+0  all off   Ctrl+Alt+D  cycle
-  On the Deskflow CLIENT:
+  On the CLIENT:
     - Ctrl+Alt+1..9  view the server's monitor 1..9 full screen and control it with this machine's own
-      keyboard/touchpad (Deskflow can't do this direction).   Ctrl+Alt+0  back to this machine   Ctrl+Alt+D  cycle
+      keyboard/touchpad.   Ctrl+Alt+0  back to this machine   Ctrl+Alt+D  cycle
   Streams are encrypted and control is accepted only from the paired machine (pairing code, local network).
 
   Run:   powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File DeskView.ps1
@@ -25,7 +25,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 foreach ($cs in 'DeskView-Portal.cs', 'DeskView-Input.cs', 'DeskView-Dxgi.cs') {
     Add-Type -Path (Join-Path $PSScriptRoot $cs) -ReferencedAssemblies System.Windows.Forms
 }
-# Work in physical pixels: Deskflow, the hooks and ffplay all do, and scaled monitors otherwise disagree.
+# Work in physical pixels: the engine, the hooks and ffplay all do, and scaled monitors otherwise disagree.
 [DeskViewPortal]::UsePhysicalPixels()
 
 # --- settings / single instance -------------------------------------------------------------------------
@@ -33,6 +33,9 @@ $settingsDir  = Join-Path $env:APPDATA 'DeskView'
 $settingsFile = Join-Path $settingsDir 'settings.json'
 $commandFile  = Join-Path $settingsDir 'command.txt'
 New-Item -ItemType Directory -Force $settingsDir | Out-Null
+
+# The DeskView app (DeskView.exe) does everything this script does; while it runs, this script stays out of the way.
+if (Get-Process DeskView -ErrorAction SilentlyContinue) { exit }
 
 $mutex = New-Object System.Threading.Mutex($false, 'Local\DeskView')
 if (-not $mutex.WaitOne(0)) {
@@ -85,11 +88,13 @@ function Get-Profile { if ($S.Profile -eq 'Auto') { Get-LinkType } else { $S.Pro
 $latencyMs = @{ Wired = 40; WiFi = 150 }
 $bitrateMbps = @{ Wired = 20; WiFi = 10 }
 
-# --- Deskflow: role, peer, names ----------------------------------------------------------------------------
-$deskflowIni = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'
-# Deskflow's settings file may not exist yet (Deskflow never opened): every read goes through here.
-function Read-DeskflowIni { if (Test-Path $deskflowIni) { [IO.File]::ReadAllText($deskflowIni) } else { '' } }
-function Get-IniValue([string]$key) { $m = [regex]::Match((Read-DeskflowIni), "(?m)^$([regex]::Escape($key))=(.*)$"); if ($m.Success) { $m.Groups[1].Value.Trim() } else { $null } }
+# --- engine: role, peer, names -----------------------------------------------------------------------------
+# Engine identifiers: the installed keyboard/mouse engine's own file names (until it is rebuilt under the DeskView name).
+$engineDir = 'C:\Program Files\Deskflow'; $engineData = 'C:\ProgramData\Deskflow'; $engineGui = 'deskflow'
+$engineIni = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'; $engineLayoutDefault = Join-Path $engineData 'deskflow-server.conf'
+# The engine's settings file may not exist yet (engine never set up): every read goes through here.
+function Read-EngineIni { if (Test-Path $engineIni) { [IO.File]::ReadAllText($engineIni) } else { '' } }
+function Get-IniValue([string]$key) { $m = [regex]::Match((Read-EngineIni), "(?m)^$([regex]::Escape($key))=(.*)$"); if ($m.Success) { $m.Groups[1].Value.Trim() } else { $null } }
 function Get-Role {
     if ($S.Role -ne 'Auto') { return $S.Role }
     $mode = Get-IniValue 'coreMode'
@@ -102,11 +107,11 @@ function Get-Peer {
          else { Get-NetTCPConnection -RemotePort 24800 -State Established -ErrorAction SilentlyContinue }
     $c = $c | Select -First 1
     if ($c -and $S.Peer -ne $c.RemoteAddress) { $S.Peer = $c.RemoteAddress; Save-Settings }
-    # Only the Deskflow partner may use the control channel (as itself or IPv4-mapped).
+    # Only the connected partner may use the control channel (as itself or IPv4-mapped).
     if ($S.Peer -and $agent) { $agent.AllowedIps = @($S.Peer, "::ffff:$($S.Peer)") }
     $S.Peer
 }
-# Write via a temp file + replace, so Deskflow never reads a half-written file.
+# Write via a temp file + replace, so the engine never reads a half-written file.
 function Write-FileAtomic([string]$path, [string]$text) {
     $tmp = "$path.deskview.tmp"
     [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding $false))
@@ -120,7 +125,7 @@ function Get-LocalName {
 function Get-RemoteName {
     if ($S.RemoteName) { return $S.RemoteName }
     if ($role -eq 'Server') {
-        $n = [regex]::Matches((Read-DeskflowIni), '(?m)^\[computer_(.+)\]\s*$') | % { $_.Groups[1].Value } | ? { $_ -ne $localName } | Select -First 1
+        $n = [regex]::Matches((Read-EngineIni), '(?m)^\[computer_(.+)\]\s*$') | % { $_.Groups[1].Value } | ? { $_ -ne $localName } | Select -First 1
         if ($n) { return $n }
     }
     'remote'
@@ -257,7 +262,7 @@ $agent.Code = $S.PairCode
 $all = [System.Windows.Forms.Screen]::AllScreens
 $agent.VL = ($all | % { $_.Bounds.Left } | Measure -Minimum).Minimum
 $agent.VR = ($all | % { $_.Bounds.Right } | Measure -Maximum).Maximum
-# On the server, Deskflow links outer edges to the client: control from the client must not trip them.
+# On the server, the engine links outer edges to the client: control from the client must not trip them.
 $agent.AvoidLeftEdge = ($role -eq 'Server'); $agent.AvoidRightEdge = ($role -eq 'Server')
 # Which local monitor the viewer's coordinates refer to (the screen it is watching).
 function Set-AgentScreen([string]$want) {
@@ -340,39 +345,39 @@ function Get-PictureRect($pl) {
 # ============================================================================================================
 # SERVER - portals
 # ============================================================================================================
-$portal = New-Object DeskViewPortal          # fallback (hook) portal for a standard Deskflow: one monitor only
+$portal = New-Object DeskViewPortal          # fallback (hook) portal for an engine without portals: one monitor only
 $portal.LocalName = $localName
 $portal.RemoteName = $remoteName
 if ($S.Debug) { $portal.DebugLog = Join-Path $env:TEMP 'deskview-portal.log' }
 
-function Get-DeskflowServerConf {
+function Get-EngineLayoutFile {
     $p = Get-IniValue 'externalConfigFile'
-    if ($p) { $p -replace '/', '\' } else { 'C:\ProgramData\Deskflow\deskflow-server.conf' }
+    if ($p) { $p -replace '/', '\' } else { $engineLayoutDefault }
 }
-# The user's own Deskflow screen layout, saved before DeskView changes it the first time.
-$layoutBackup = Join-Path $settingsDir 'deskflow-layout-backup.json'
-function Backup-DeskflowLayout {
+# The user's own engine screen layout, saved before DeskView changes it the first time.
+$layoutBackup = Join-Path $settingsDir 'engine-layout-backup.json'
+function Backup-EngineLayout {
     if (Test-Path $layoutBackup) { return }
-    $path = Get-DeskflowServerConf
-    $ini = Read-DeskflowIni
+    $path = Get-EngineLayoutFile
+    $ini = Read-EngineIni
     [pscustomobject]@{
         ServerConf     = $path
         Content        = $(if (Test-Path $path) { [IO.File]::ReadAllText($path) } else { $null })
         ExternalConfig = [bool]($ini -match '(?m)^externalConfig=true')
     } | ConvertTo-Json | Set-Content $layoutBackup -Encoding UTF8
 }
-function Restore-DeskflowLayout {
+function Restore-EngineLayout {
     if (-not (Test-Path $layoutBackup)) { return }
     $b = Get-Content $layoutBackup -Raw | ConvertFrom-Json
     if ($null -ne $b.Content) { Write-FileAtomic $b.ServerConf $b.Content }
     if (-not $b.ExternalConfig) {
-        $ini = Read-DeskflowIni
-        if ($ini) { Write-FileAtomic $deskflowIni ($ini -replace '(?m)^externalConfig=true', 'externalConfig=false') }
+        $ini = Read-EngineIni
+        if ($ini) { Write-FileAtomic $engineIni ($ini -replace '(?m)^externalConfig=true', 'externalConfig=false') }
     }
     [IO.File]::Delete($layoutBackup)
 }
-function Set-DeskflowLinks([bool]$leftToRemote, [bool]$rightToRemote) {
-    if ($remoteName -eq 'remote') { return }             # partner not known to Deskflow yet: writing links would break its config
+function Set-EngineLinks([bool]$leftToRemote, [bool]$rightToRemote) {
+    if ($remoteName -eq 'remote') { return }             # partner not known to the engine yet: writing links would break its config
     $L = $localName; $R = $remoteName
     $lines = @('section: links', "`t${L}:")
     if ($rightToRemote) { $lines += "`t`tright = $R" }
@@ -382,34 +387,34 @@ function Set-DeskflowLinks([bool]$leftToRemote, [bool]$rightToRemote) {
     if ($leftToRemote)  { $lines += "`t`tright = $L" }
     $lines += @('end', '', 'section: options', 'end', '')
     $conf = $lines -join "`r`n"
-    $path = Get-DeskflowServerConf
+    $path = Get-EngineLayoutFile
     $old = if (Test-Path $path) { [IO.File]::ReadAllText($path) } else { '' }
     if ($old -eq $conf) { return }
-    Backup-DeskflowLayout
+    Backup-EngineLayout
     New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
     Write-FileAtomic $path $conf
-    # Make sure Deskflow uses this file, then restart the app so its server core loads the new links.
-    $ini = Read-DeskflowIni
+    # Make sure the engine uses this file, then restart its app so the server loads the new links.
+    $ini = Read-EngineIni
     if ($ini -match '(?m)^externalConfig=false') { $ini = $ini -replace '(?m)^externalConfig=false', 'externalConfig=true' }
     elseif ($ini -notmatch '(?m)^externalConfig=') {
-        # A fresh Deskflow has no such keys: add them under [server] so it reads our layout file.
+        # A fresh engine install has no such keys: add them under [server] so it reads our layout file.
         $keys = "externalConfig=true`r`nexternalConfigFile=$($path -replace '\\', '/')"
         if ($ini -match '(?m)^\[server\]\s*$') { $ini = [regex]::Replace($ini, '(?m)^\[server\]\s*$', "[server]`r`n$keys", 1) } else { $ini = $ini.TrimEnd() + "`r`n`r`n[server]`r`n$keys`r`n" }
     }
-    Write-FileAtomic $deskflowIni $ini
-    Get-Process deskflow -ErrorAction SilentlyContinue | Stop-Process -Force
+    Write-FileAtomic $engineIni $ini
+    Get-Process $engineGui -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 500
-    Start-Process 'C:\Program Files\Deskflow\deskflow.exe' -WindowStyle Minimized
+    Start-Process (Join-Path $engineDir "$engineGui.exe") -WindowStyle Minimized
     $script:reinstallAt = (Get-Date).AddSeconds(4)
 }
-# Deskflow built with DeskView (github.com/xl337x/deskflow, branch deskview) handles portals itself: we only
+# The DeskView build of the engine handles portals itself (see THIRD_PARTY_NOTICES.md): we only
 # tell it where each picture is and which client screen it shows (computer_<name>/portal in its settings).
-$nativePortal = Test-Path 'C:\Program Files\Deskflow\deskview.txt'
+$nativePortal = Test-Path (Join-Path $engineDir 'deskview.txt')
 function Set-NativePortal([string]$value) {
-    $ini = Read-DeskflowIni
+    $ini = Read-EngineIni
     if (-not $ini) { return }
     $section = "[computer_$remoteName]"
-    # portalPid lets Deskflow ignore portals left behind if DeskView dies without cleaning up.
+    # portalPid lets the engine ignore portals left behind if DeskView dies without cleaning up.
     $line = if ($value) { "portal=`"$value`"`r`nportalPid=$PID" } else { '' }
     $i = $ini.IndexOf($section, [StringComparison]::OrdinalIgnoreCase)
     if ($i -lt 0) { if (-not $value) { return }; $ini = $ini.TrimEnd() + "`r`n`r`n$section`r`nname=$remoteName`r`n$line`r`n" }
@@ -423,7 +428,7 @@ function Set-NativePortal([string]$value) {
         if ($line) { $body = $body.TrimEnd("`r", "`n") + "`r`n$line`r`n" }
         $ini = $ini.Substring(0, $start) + $body + $ini.Substring($next)
     }
-    Write-FileAtomic $deskflowIni $ini
+    Write-FileAtomic $engineIni $ini
 }
 # Sides of a picture the cursor may leave by: only where everything just outside that side is on a monitor
 # and not inside another picture (otherwise leaving would land in a gap, or straight back in the client).
@@ -441,13 +446,13 @@ function Get-ExitSides($pr, $others) {
     if (Covered ($ys | % { , @(($pr.L + $pr.W), $_) })) { $sides += 'R' }
     if (Covered ($xs | % { , @($_, ($pr.T - 1)) })) { $sides += 'T' }
     if (Covered ($xs | % { , @($_, ($pr.T + $pr.H)) })) { $sides += 'B' }
-    if (-not $sides) { 'LRTB' } else { $sides }          # nothing outside fits: let Deskflow's own bounds decide
+    if (-not $sides) { 'LRTB' } else { $sides }          # nothing outside fits: let the engine's own bounds decide
 }
-# Tell Deskflow about every picture: "x,y,w,h,SIDES[@client screen rect]" separated by ';'.
+# Tell the engine about every picture: "x,y,w,h,SIDES[@client screen rect]" separated by ';'.
 function Update-Portals {
     $pls = @($script:players.Values | Sort-Object { $_.Screen.Bounds.X })
     if (-not $S.Interactive -or $pls.Count -eq 0) {
-        if ($nativePortal) { Set-NativePortal '' } else { $portal.Enabled = $false; Set-DeskflowLinks $false $true }
+        if ($nativePortal) { Set-NativePortal '' } else { $portal.Enabled = $false; Set-EngineLinks $false $true }
         return
     }
     if ($nativePortal) {
@@ -459,11 +464,11 @@ function Update-Portals {
             if ($pls[$i].RemoteRect) { $e += "@$($pls[$i].RemoteRect)" }
             $e
         }
-        # The user's Deskflow layout (edge links) is left exactly as it is: portals work on top of it.
+        # The user's engine layout (edge links) is left exactly as it is: portals work on top of it.
         Set-NativePortal ($entries -join ';')
         return
     }
-    # Standard Deskflow: the hook portal handles the first picture only (the others are view-only).
+    # Engine without portals: the hook portal handles the first picture only (the others are view-only).
     $pl = $pls[0]
     $all = [System.Windows.Forms.Screen]::AllScreens
     $b = $pl.Screen.Bounds
@@ -472,8 +477,8 @@ function Update-Portals {
     $portal.VR = ($all | % { $_.Bounds.Right }  | Measure -Maximum).Maximum
     $portal.VT = ($all | % { $_.Bounds.Top }    | Measure -Minimum).Minimum
     $portal.VB = ($all | % { $_.Bounds.Bottom } | Measure -Maximum).Maximum
-    # Entering from the left uses Deskflow's right-edge link, entering from the right its left-edge link.
-    Set-DeskflowLinks ($portal.PR -lt $portal.VR) ($portal.PL -gt $portal.VL)
+    # Entering from the left uses the engine's right-edge link, entering from the right its left-edge link.
+    Set-EngineLinks ($portal.PR -lt $portal.VR) ($portal.PL -gt $portal.VL)
     $pr = Get-PictureRect $pl
     $portal.VidT = $pr.T; $portal.VidH = $pr.H
     $portal.RemoteH = if ($pl.RemoteRes) { $pl.RemoteRes.H } else { 0 }
@@ -570,7 +575,7 @@ function On-Hotkey($vk) {
 }
 
 function Exit-DeskView {
-    try { if ($role -eq 'Server') { if ($nativePortal) { Set-NativePortal '' } else { Restore-DeskflowLayout } } } catch {}
+    try { if ($role -eq 'Server') { if ($nativePortal) { Set-NativePortal '' } else { Restore-EngineLayout } } } catch {}
     $portal.Stop(); $forwarder.Stop(); $agent.Stop(); Stop-Players; Stop-Senders
     $tray.Visible = $false; [System.Windows.Forms.Application]::Exit()
 }

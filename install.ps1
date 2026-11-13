@@ -1,19 +1,28 @@
-# DeskView installer - downloads the latest DeskView from GitHub and runs its setup.
-# Every line is a complete statement on purpose: "irm | iex" can feed this file to PowerShell line by line.
-#
-#   Install (each machine):            irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
-#   With the pairing code (client):    $PairCode='ABCD2345'; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
-#   Add virtual screens (laptop): $DeskViewVirtualScreens=2; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
-#   Uninstall:                         $DeskViewUninstall=1; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
-if (-not $DeskViewRepo) { $DeskViewRepo = 'xl337x/DeskView' }
-if (-not $DeskViewBranch) { $DeskViewBranch = 'main' }
+<#
+  DeskView installer - downloads the latest DeskView from GitHub and runs its setup.
+
+  Download it to a file and run it (antivirus products rightly distrust scripts piped straight into iex):
+    iwr https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 -OutFile $env:TEMP\deskview-install.ps1
+    powershell -ExecutionPolicy Bypass -File $env:TEMP\deskview-install.ps1 [-PairCode CODE] [-Role Server|Client] [-VirtualScreens N] [-Uninstall]
+#>
+param(
+    [string]$PairCode,
+    [ValidateSet('', 'Server', 'Client')] [string]$Role = '',
+    [ValidateRange(-1, 4)] [int]$VirtualScreens = -1,
+    [switch]$Uninstall,
+    [string]$Repo = 'xl337x/DeskView',
+    [string]$Branch = 'main'
+)
+$ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-$dvBase = "https://raw.githubusercontent.com/$DeskViewRepo/$DeskViewBranch/app"
-$dvSetup = Join-Path $env:TEMP 'DeskView-Setup.ps1'
-Write-Host "Downloading DeskView setup from github.com/$DeskViewRepo ($DeskViewBranch)..."
-Invoke-WebRequest "$dvBase/DeskView-Setup.ps1" -OutFile $dvSetup -UseBasicParsing -ErrorAction Stop
-$dvArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $dvSetup, '-Source', $dvBase)
-if ($PairCode) { $dvArgs += @('-PairCode', $PairCode) }
-if ($DeskViewUninstall) { $dvArgs += '-Uninstall' }
-if ($null -ne $DeskViewVirtualScreens) { $dvArgs += @('-VirtualScreens', [string]$DeskViewVirtualScreens) }
-& powershell @dvArgs
+$base = "https://raw.githubusercontent.com/$Repo/$Branch/app"
+$setup = Join-Path $env:TEMP 'DeskView-Setup.ps1'
+Write-Host "Downloading DeskView setup from github.com/$Repo ($Branch)..."
+Invoke-WebRequest "$base/DeskView-Setup.ps1" -OutFile $setup -UseBasicParsing
+
+$a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $setup, '-Source', $base)
+if ($PairCode) { $a += @('-PairCode', $PairCode) }
+if ($Role) { $a += @('-Role', $Role) }
+if ($VirtualScreens -ge 0) { $a += @('-VirtualScreens', [string]$VirtualScreens) }
+if ($Uninstall) { $a += '-Uninstall' }
+& powershell @a

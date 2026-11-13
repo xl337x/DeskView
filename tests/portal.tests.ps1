@@ -1,6 +1,6 @@
-﻿<#
-  Live tests for the portal (run on the Deskflow SERVER with DeskView running and the client connected).
-  Simulates mouse moves into / out of the portal monitor and checks Deskflow's log for the hand-overs.
+<#
+  Live tests for the portal (run on the SERVER with DeskView running and the client connected).
+  Simulates mouse moves into / out of the portal monitor and checks the engine's log for the hand-overs.
   Your mouse moves by itself for a few seconds per monitor.
 
     tests\portal.tests.ps1            test the monitor DeskView currently shows the client on
@@ -55,12 +55,12 @@ function Trip($label, $startX, $y, $inDir, $outDir, $want, $backX) {
         Start-Sleep -Milliseconds 300
     }
     [void][PT]::GetCursorPos([ref]$pt)
-    # Where control came back, as Deskflow reports it (the test keeps moving for a few steps after that).
+    # Where control came back, as the engine reports it (the test keeps moving for a few steps after that).
     $out = Since $n0 "to `"$env:COMPUTERNAME`"" | Select -First 1
     $b = if ($out) { [regex]::Match($out.Line, 'at (-?\d+),(-?\d+)').Groups | Select -Skip 1 | % { [int]$_.Value } } else { $null }
     if ($b) { $pt.X = $b[0]; $pt.Y = $b[1] }
     # Entering lands at the point crossed: within a step or two of the remote edge (exactly on it with the
-    # edge-based portal, a few pixels in with Deskflow's native portal).
+    # edge-based portal, a few pixels in with the engine's native portal).
     $ok = switch ($want) {
         'none'  { -not $e }
         'left'  { $e -and $e[0] -le 25 -and (Near $e[1] $y) -and $b -and (Near $pt.X $backX 3) -and (Near $pt.Y $y) }
@@ -99,7 +99,7 @@ if ($All) {
     foreach ($scr in $screens) {
         $n++
         & powershell -NoProfile -ExecutionPolicy Bypass -File $app -Show $n
-        Start-Sleep 25                       # Deskflow restarts with the new links and the client reconnects
+        Start-Sleep 25                       # The engine restarts with the new links and the client reconnects
         Test-Monitor $scr
     }
     & powershell -NoProfile -ExecutionPolicy Bypass -File $app -Show $current

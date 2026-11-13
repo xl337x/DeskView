@@ -1,7 +1,7 @@
 <#
   Runs the DeskView tests.
     tests\run-all.ps1          unit + loopback tests (mapping, input channel) - any Windows machine
-    tests\run-all.ps1 -Live    also the live portal tests on every monitor (Deskflow server with the client connected)
+    tests\run-all.ps1 -Live    also the live portal tests on every monitor (server with the client connected)
 #>
 param([switch]$Live)
 $failed = 0

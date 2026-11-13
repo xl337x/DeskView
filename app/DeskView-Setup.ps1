@@ -1,21 +1,21 @@
 ﻿<#
-  DeskView setup - the same command on both machines (Deskflow installed and connected first).
+  DeskView setup - the same command on both machines.
 
     powershell -ExecutionPolicy Bypass -File DeskView-Setup.ps1 [-Source <folder | https://.../app>] [-PairCode CODE]
     powershell -ExecutionPolicy Bypass -File DeskView-Setup.ps1 -Uninstall
 
   Install:
     - Administrator approval only if something is missing: two firewall rules (local network only:
-      UDP 9000 video, TCP 9002 control) and FFmpeg / Deskflow via winget.
+      UDP 9000-9009 video, TCP 9002 control) and the keyboard/mouse engine.
     - Copies DeskView to %LOCALAPPDATA%\DeskView, starts it, and starts it at every sign-in.
-    - Pairing: the Deskflow server gets a code (shown here and in its tray menu); enter it on the client.
+    - Pairing: the server gets a code (shown here and in its tray menu); enter it on the client.
   Uninstall: stops DeskView, removes the startup entry, program folder, settings and firewall rules.
 #>
 param(
     [string]$Source,
     [string]$PairCode,
     [switch]$Uninstall,
-    [ValidateSet('', 'Server', 'Client')] [string]$Role = '',   # only needed if Deskflow was never set up on this machine
+    [ValidateSet('', 'Server', 'Client')] [string]$Role = '',   # only needed if the engine was never set up on this machine
     [ValidateRange(-1, 4)] [int]$VirtualScreens = -1,              # add N virtual screens (0 removes them; -1 leaves them as they are)
     [switch]$Elevated,            # internal: the part that needs administrator rights
     [switch]$RemoveRules          # internal: elevated part of uninstall
@@ -27,6 +27,9 @@ $settingsDir = Join-Path $env:APPDATA 'DeskView'
 $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'DeskView.lnk'
 $videoPorts = '9000-9009'; $controlPort = 9002      # one video port per screen (screen n = 9000+n-1)
 $defaultSource = 'https://raw.githubusercontent.com/xl337x/DeskView/main/app'
+# Engine identifiers: the installed keyboard/mouse engine's own names (until it is rebuilt under the DeskView name).
+$engineGuiExe = 'C:\Program Files\Deskflow\deskflow.exe'; $engineIni = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'
+$engineWingetId = 'Deskflow.Deskflow'; $engineReleasesApi = 'https://api.github.com/repos/deskflow/deskflow/releases/latest'
 
 # ---- virtual screens (Virtual Display Driver, github.com/VirtualDrivers/Virtual-Display-Driver) -------------
 # Extra screens for this machine that Windows treats as real monitors: DeskView streams them like any other
@@ -64,24 +67,24 @@ if ($Elevated) {
     New-NetFirewallRule -DisplayName 'DeskView video (UDP 9000-9009)' -Direction Inbound -Protocol UDP -LocalPort $videoPorts -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
     New-NetFirewallRule -DisplayName 'DeskView control (TCP 9002)' -Direction Inbound -Protocol TCP -LocalPort $controlPort -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
     $failed = 0
-    if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) {
-        Write-Host 'Installing Deskflow...'
+    if (-not (Test-Path $engineGuiExe)) {
+        Write-Host 'Installing the keyboard/mouse engine...'
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             # --source winget: on fresh machines the msstore source can fail and abort the whole install
-            winget install --id Deskflow.Deskflow -e --source winget --accept-source-agreements --accept-package-agreements --silent | Out-Host
+            winget install --id $engineWingetId -e --source winget --accept-source-agreements --accept-package-agreements --silent | Out-Host
         }
-        if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) {
-            # No winget (or it failed): the official installer straight from Deskflow's GitHub releases.
+        if (-not (Test-Path $engineGuiExe)) {
+            # No winget (or it failed): the engine's installer straight from its GitHub releases.
             try {
-                $rel = Invoke-RestMethod 'https://api.github.com/repos/deskflow/deskflow/releases/latest' -UseBasicParsing
+                $rel = Invoke-RestMethod $engineReleasesApi -UseBasicParsing
                 $asset = $rel.assets | ? { $_.name -match 'win.*x64.*\.msi$' } | Select -First 1
                 $msi = Join-Path $env:TEMP $asset.name
                 Invoke-WebRequest $asset.browser_download_url -OutFile $msi -UseBasicParsing
                 $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
-                Write-Host "Deskflow $($rel.tag_name) installer exit code $($p.ExitCode)"
-            } catch { Write-Host "Deskflow download failed: $_" }
+                Write-Host "Engine $($rel.tag_name) installer exit code $($p.ExitCode)"
+            } catch { Write-Host "Engine download failed: $_" }
         }
-        if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) { Write-Host 'Deskflow is NOT installed.'; $failed++ }
+        if (-not (Test-Path $engineGuiExe)) { Write-Host 'The keyboard/mouse engine is NOT installed.'; $failed++ }
     }
     if ($VirtualScreens -ge 0) { if (-not (Set-VirtualScreens $VirtualScreens)) { $failed++ } }
     exit $failed
@@ -109,11 +112,11 @@ if ($Uninstall) {
     Write-Host '== DeskView uninstall ==' -ForegroundColor Cyan
     Stop-DeskView
     if (Test-Path $startupLink) { [IO.File]::Delete($startupLink) }
-    # Give Deskflow its own settings back: no portal, and the screen layout from before DeskView.
-    $ini = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'
+    # Give the engine its own settings back: no portal, and the screen layout from before DeskView.
+    $ini = $engineIni
     if (Test-Path $ini) {
         $text = [IO.File]::ReadAllText($ini) -replace '(?m)^portal(Pid)?=.*\r?\n?', ''
-        $backup = Join-Path $settingsDir 'deskflow-layout-backup.json'
+        $backup = Join-Path $settingsDir 'engine-layout-backup.json'
         if (Test-Path $backup) {
             $b = Get-Content $backup -Raw | ConvertFrom-Json
             if ($null -ne $b.Content) { [IO.File]::WriteAllText($b.ServerConf, $b.Content) }
@@ -126,7 +129,7 @@ if ($Uninstall) {
         Write-Host 'Removing the firewall rules (a Windows prompt will appear)...'
         [void](Run-Elevated 'RemoveRules')
     }
-    Write-Host 'DeskView removed. Deskflow, FFmpeg and Deskflow''s screen layout file were left in place.' -ForegroundColor Green
+    Write-Host 'DeskView removed. The keyboard/mouse engine and FFmpeg were left in place.' -ForegroundColor Green
     exit 0
 }
 
@@ -134,14 +137,14 @@ if ($Uninstall) {
 Write-Host '== DeskView setup ==' -ForegroundColor Cyan
 if (-not $Source) { $Source = if (Test-Path (Join-Path $PSScriptRoot 'DeskView.ps1')) { $PSScriptRoot } else { $defaultSource } }
 
-# 1. Administrator part - only when something is actually missing (firewall rules, Deskflow).
+# 1. Administrator part - only when something is actually missing (firewall rules, engine).
 $rules = @(Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | % DisplayName)
 $needAdmin = ($rules -notcontains 'DeskView video (UDP 9000-9009)') -or ($rules -notcontains 'DeskView control (TCP 9002)') -or
-             -not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe') -or $VirtualScreens -ge 0
+             -not (Test-Path $engineGuiExe) -or $VirtualScreens -ge 0
 if ($needAdmin) {
-    Write-Host 'Step 1/4: administrator approval for firewall rules / Deskflow (a Windows prompt will appear)...'
-    if (-not (Run-Elevated "Elevated -VirtualScreens $VirtualScreens")) { Write-Warning 'The administrator part did not fully succeed (see above) - check Deskflow is installed and the firewall allows DeskView.' }
-} else { Write-Host 'Step 1/4: firewall rules and Deskflow already in place.' }
+    Write-Host 'Step 1/4: administrator approval for firewall rules / keyboard-mouse engine (a Windows prompt will appear)...'
+    if (-not (Run-Elevated "Elevated -VirtualScreens $VirtualScreens")) { Write-Warning 'The administrator part did not fully succeed (see above) - check the keyboard/mouse engine is installed and the firewall allows DeskView.' }
+} else { Write-Host 'Step 1/4: firewall rules and keyboard/mouse engine already in place.' }
 
 # 2. Copy the program.
 Write-Host "Step 2/4: installing to $installDir (from $Source)"
@@ -179,18 +182,18 @@ Write-Host 'Step 3/4: pairing'
 New-Item -ItemType Directory -Force $settingsDir | Out-Null
 $settingsFile = Join-Path $settingsDir 'settings.json'
 $settings = if (Test-Path $settingsFile) { Get-Content $settingsFile -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
-$ini = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'
+$ini = $engineIni
 if ($Role) { $isServer = $Role -eq 'Server' }
 else {
     $mode = if (Test-Path $ini) { [regex]::Match([IO.File]::ReadAllText($ini), '(?m)^coreMode=(\d)').Groups[1].Value } else { '' }
     if ($mode -eq '2') { $isServer = $true }
     elseif ($mode -eq '1') { $isServer = $false }
     else {
-        # Deskflow is new here (no settings yet, or no role chosen), so it can't tell us the role.
-        Write-Host '   Deskflow is not set up as Server or Client on this machine yet.' -ForegroundColor Yellow
-        $isServer = (Read-Host '   Is this the machine whose keyboard and mouse you share (the Deskflow SERVER)? [y/N]') -match '^[yY]'
+        # The engine is new here (no settings yet, or no role chosen), so it can't tell us the role.
+        Write-Host '   This machine is not set up as server or client yet.' -ForegroundColor Yellow
+        $isServer = (Read-Host '   Is this the machine whose keyboard and mouse you share (the SERVER)? [y/N]') -match '^[yY]'
         $Role = if ($isServer) { 'Server' } else { 'Client' }
-        Write-Host "   After setup, open Deskflow, choose $Role there too, and connect the two machines."
+        Write-Host "   Then set up the other machine the same way (as the other role)."
     }
 }
 if ($isServer) {
@@ -200,7 +203,7 @@ if ($isServer) {
         $settings | Add-Member PairCode (-join ($bytes | % { $alphabet[$_ % $alphabet.Length] })) -Force
     }
     Write-Host ''
-    Write-Host "   This machine is the Deskflow SERVER. Pairing code:  $($settings.PairCode)" -ForegroundColor Green
+    Write-Host "   This machine is the SERVER. Pairing code:  $($settings.PairCode)" -ForegroundColor Green
     Write-Host '   Enter it when installing on the other machine (it is also in the DeskView tray menu).'
 } else {
     if (-not $PairCode -and $settings.PairCode) { $PairCode = $settings.PairCode }
@@ -208,7 +211,7 @@ if ($isServer) {
     while (-not $PairCode -or $PairCode.Trim().ToUpper() -notmatch $codePattern) {
         if ($PairCode) { Write-Host "   '$PairCode' is not a DeskView pairing code (8-12 letters/digits, as shown on the server)." -ForegroundColor Yellow }
         if (-not [Environment]::UserInteractive) { throw 'Pass the pairing code with -PairCode (no one to ask).' }
-        $PairCode = Read-Host '   This machine is a Deskflow CLIENT. Enter the pairing code shown on the server'
+        $PairCode = Read-Host '   This machine is a CLIENT. Enter the pairing code shown on the server'
     }
     $settings | Add-Member PairCode ($PairCode.Trim().ToUpper()) -Force
 }
