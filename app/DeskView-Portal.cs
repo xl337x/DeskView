@@ -1,12 +1,12 @@
 // DeskView Portal - makes the monitor showing the remote screen behave like the remote machine's own display.
 //
-// Deskflow only switches machines at the outer edges of the server's desktop. The portal watches the mouse
+// The engine only switches machines at the outer edges of the server's desktop. The portal watches the mouse
 // (low-level hook, own thread) and, the moment the cursor enters the portal monitor, puts it on the outer edge
-// that Deskflow links to the remote machine and nudges it, so Deskflow hands keyboard + mouse to the remote
-// machine at the matching height. When Deskflow hands control back (read from its log), the cursor is placed
+// that the engine links to the remote machine and nudges it, so the engine hands keyboard + mouse to the remote
+// machine at the matching height. When the engine hands control back (read from its log), the cursor is placed
 // just outside the portal monitor on the side it left from.
 //
-// Deskflow links required (written by DeskView.ps1):
+// The engine links required (written by DeskView.ps1):
 //   portal has a monitor on its left  -> LOCAL: right = REMOTE ; REMOTE: left = LOCAL
 //   portal has a monitor on its right -> LOCAL: left = REMOTE  ; REMOTE: right = LOCAL
 using System;
@@ -46,15 +46,15 @@ public class DeskViewPortal
     public volatile bool Enabled;
     public int PL, PT, PR, PB;      // portal monitor
     public int VL, VR, VT, VB;      // whole local desktop
-    public string LocalName = Environment.MachineName, RemoteName = "";   // Deskflow screen names
+    public string LocalName = Environment.MachineName, RemoteName = "";   // The engine screen names
     public string LogPath = @"C:\ProgramData\Deskflow\deskflow-daemon.log";
     public string Status = "idle";
 
     // Where the remote picture is drawn inside the portal monitor (it may be letterboxed), and the remote
     // desktop's height in pixels (from the video stream). RemoteH = 0 means unknown: heights map 1:1.
     public int VidT, VidH, RemoteH;
-    // How Deskflow translates heights across each local outer edge: remoteY = k * localY. Equal-height
-    // screens give 1; Deskflow may scale proportionally when heights differ, so it is learned per edge
+    // How the engine translates heights across each local outer edge: remoteY = k * localY. Equal-height
+    // screens give 1; the engine may scale proportionally when heights differ, so it is learned per edge
     // from every hand-over (the log reports where the cursor landed on the remote machine).
     public double KRight = 1.0, KLeft = 1.0;
 
@@ -125,7 +125,7 @@ public class DeskViewPortal
 
     public void Stop() { stopRequested = true; if (thread != null) thread.Join(2000); thread = null; }
 
-    /// <summary>Re-register the hook so it runs before Deskflow's (call after Deskflow restarts).</summary>
+    /// <summary>Re-register the hook so it runs before the engine's (call after the engine restarts).</summary>
     public void Reinstall() { reinstallRequested = true; }
 
     void Run()
@@ -169,7 +169,7 @@ public class DeskViewPortal
             {
                 int x = m.pt.X, y = m.pt.Y;
                 if (DebugLog != null && (DateTime.Now - lastMoveLog).TotalMilliseconds > 150) { lastMoveLog = DateTime.Now; Log("move " + x + "," + y + " state " + state + " enabled " + Enabled); }
-                if (state == State.Pending) return (IntPtr)1;        // waiting for Deskflow to take over
+                if (state == State.Pending) return (IntPtr)1;        // waiting for the engine to take over
                 if (state == State.Local)
                 {
                     bool inPortal = x >= PL && x < PR && y >= PT && y < PB;
@@ -228,14 +228,14 @@ public class DeskViewPortal
 
     void Enter(int edgeX, int y, int nudge, int backX, bool viaRight)
     {
-        // Pick the height on Deskflow's edge that lands the remote cursor where the user is pointing.
+        // Pick the height on the engine's edge that lands the remote cursor where the user is pointing.
         double k = viaRight ? KRight : KLeft;
         sentY = Clamp(VT + (int)Math.Round(RemoteYFor(y) / k), VT, VB - 1);
         pendingViaRight = viaRight;
         Log("enter portal y=" + y + " -> edge " + edgeX + "," + sentY + " (k=" + k + ", remoteH=" + RemoteH + ", vid " + VidT + "+" + VidH + ")");
         pendingBackX = backX; pendingBackY = y;
         MoveTo(edgeX, sentY);
-        Send(nudge, 0, 0x0001);                                    // relative push across Deskflow's edge
+        Send(nudge, 0, 0x0001);                                    // relative push across the engine's edge
         state = State.Pending;
         pendingSince = DateTime.Now;
     }
@@ -247,7 +247,7 @@ public class DeskViewPortal
 
         if (state == State.Pending && (DateTime.Now - pendingSince).TotalMilliseconds > 700)
         {
-            // Deskflow didn't switch (remote machine not connected?) - put the cursor back and back off.
+            // The engine didn't switch (remote machine not connected?) - put the cursor back and back off.
             MoveTo(pendingBackX, pendingBackY);
             state = State.Local;
             lastX = pendingBackX;
@@ -256,7 +256,7 @@ public class DeskViewPortal
             Log(Status);
         }
 
-        // Keep our hook ahead of Deskflow's in the chain (Deskflow re-hooks when its core restarts).
+        // Keep our hook ahead of the engine's in the chain (the engine re-hooks when its core restarts).
         if (reinstallRequested || (state == State.Local && (DateTime.Now - lastReinstall).TotalSeconds > 5))
         {
             reinstallRequested = false;
@@ -294,7 +294,7 @@ public class DeskViewPortal
 
     void OnSwitch(string to, int x, int y)
     {
-        Log("deskflow switch to " + to + " at " + x + "," + y + " (state " + state + ")");
+        Log("engine switch to " + to + " at " + x + "," + y + " (state " + state + ")");
         if (string.Equals(to, RemoteName, StringComparison.OrdinalIgnoreCase))
         {
             // Learn the edge's height translation, unless the landing point was clamped to the remote edge.
@@ -311,11 +311,11 @@ public class DeskViewPortal
 
         if (Enabled && state != State.Local)
         {
-            // Deskflow re-enters on the outer edge opposite the remote edge that was crossed:
+            // The engine re-enters on the outer edge opposite the remote edge that was crossed:
             // right outer edge = left the remote machine through its left side, and vice versa.
             bool cameBackOnRight = x > (VL + VR) / 2;
             int target = cameBackOnRight ? (HasLeft ? PL - 2 : PR + 1) : (HasRight ? PR + 1 : PL - 2);
-            // y is on Deskflow's local edge; recover the remote height, then place it level with the picture.
+            // y is on the engine's local edge; recover the remote height, then place it level with the picture.
             double k = cameBackOnRight ? KRight : KLeft;
             int targetY = LocalYFor((int)Math.Round((y - VT) * k));
             MoveTo(target, targetY);

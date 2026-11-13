@@ -1,0 +1,374 @@
+// The DeskView window: a sidebar with pages. Every page explains itself; settings pages end with "Save and apply".
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Windows.Forms;
+
+namespace DeskView.UI
+{
+    public class MainForm : Form
+    {
+        readonly Engine engine;
+        AppSettings S => engine.S;
+        readonly Panel content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Page };
+        readonly FlowLayoutPanel nav = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 210, BackColor = Theme.Sidebar, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(0, 16, 0, 0) };
+        readonly Dictionary<string, Func<Control>> pages = new Dictionary<string, Func<Control>>();
+        readonly Dictionary<string, Label> navItems = new Dictionary<string, Label>();
+        string current;
+        readonly Timer refresh = new Timer { Interval = 1000 };
+        Action onRefresh;
+
+        public MainForm(Engine e)
+        {
+            engine = e;
+            Text = "DeskView"; Icon = AppIcon.Get(); StartPosition = FormStartPosition.CenterScreen;
+            Size = new Size(1000, 720); MinimumSize = new Size(860, 560); Font = Theme.Body; BackColor = Theme.Page;
+            AutoScaleMode = AutoScaleMode.Dpi;
+
+            var brand = new Label { Text = "  DeskView", Font = new Font("Segoe UI Semibold", 15f), ForeColor = Color.White, AutoSize = false, Size = new Size(210, 44), TextAlign = ContentAlignment.MiddleLeft };
+            nav.Controls.Add(brand);
+            var sub = new Label { Text = "    one desk, every screen", Font = Theme.Small, ForeColor = Theme.SidebarText, AutoSize = false, Size = new Size(210, 26) };
+            nav.Controls.Add(sub);
+
+            Add("Overview", OverviewPage);
+            Add("Screens", ScreensPage);
+            Add("Connection", ConnectionPage);
+            Add("Switching & input", InputPage);
+            Add("Security", SecurityPage);
+            Add("Logs", LogsPage);
+            Add("About", AboutPage);
+
+            Controls.Add(content);
+            Controls.Add(nav);
+            refresh.Tick += (o, ev) => onRefresh?.Invoke();
+            refresh.Start();
+            engine.Changed += () => { if (current == "Overview" || current == "Screens") BeginInvokeSafe(() => onRefresh?.Invoke()); };
+            ShowPage("Overview");
+        }
+
+        void BeginInvokeSafe(Action a) { if (IsHandleCreated && !IsDisposed) BeginInvoke(a); }
+
+        void Add(string name, Func<Control> page)
+        {
+            pages[name] = page;
+            var item = new Label { Text = "    " + name, AutoSize = false, Size = new Size(210, 40), TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.SidebarText, Font = Theme.Body, Cursor = Cursors.Hand, Margin = new Padding(0) };
+            item.MouseEnter += (o, e) => { if (current != name) item.BackColor = Theme.SidebarHover; };
+            item.MouseLeave += (o, e) => { if (current != name) item.BackColor = Theme.Sidebar; };
+            item.Click += (o, e) => ShowPage(name);
+            navItems[name] = item;
+            nav.Controls.Add(item);
+        }
+
+        public void ShowPage(string name)
+        {
+            current = name; onRefresh = null;
+            foreach (var kv in navItems) { kv.Value.BackColor = kv.Key == name ? Theme.Accent : Theme.Sidebar; kv.Value.ForeColor = kv.Key == name ? Color.White : Theme.SidebarText; }
+            content.SuspendLayout();
+            foreach (Control c in content.Controls) c.Dispose();
+            content.Controls.Clear();
+            content.Controls.Add(pages[name]());
+            content.ResumeLayout();
+            if (!Visible) base.Show();
+        }
+
+        string Other => string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName;
+
+        // ================================================================================================ Overview
+        Control OverviewPage()
+        {
+            var page = Theme.PageBody("Overview", "What DeskView is doing right now. Everything updates live.");
+            var status = Theme.Card("Status");
+            var actions = Theme.Card("Engine", "The engine shares this computer's keyboard and mouse (server) or receives them (client). " +
+                "It runs in the background with the rights it needs to work over admin windows too.");
+            actions.Controls.Add(Wrap(
+                Theme.Button("Start / restart", (o, e) => { engine.RestartEngine(); }, true),
+                Theme.Button("Stop", (o, e) => engine.StopEngine()),
+                Theme.Button("Setup assistant...", (o, e) => { using (var w = new SetupWizard(engine)) w.ShowDialog(this); ShowPage("Overview"); })));
+            var checks = Theme.Card("Health checks", "If something here is not green, it tells you what to do.");
+            page.Controls.Add(status); page.Controls.Add(actions); page.Controls.Add(checks);
+
+            onRefresh = () =>
+            {
+                status.SuspendLayout();
+                while (status.Controls.Count > 1) status.Controls[1].Dispose();
+                string role = S.Role == Role.Server ? "Server - this computer's keyboard and mouse are shared" : S.Role == Role.Client ? "Client - uses the server's keyboard and mouse" : "Not set up yet";
+                status.Controls.Add(Theme.Row("This computer", Theme.Label($"{S.ComputerName}  ({role})")));
+                var peer = engine.CurrentPeer();
+                status.Controls.Add(Theme.Row("Other computer", peer != null
+                    ? Theme.Status($"{Other} connected ({peer})", Theme.Good)
+                    : Theme.Status(S.Role == Role.Client ? $"not connected - looking for the server at {S.ServerAddress}" : $"waiting for {Other} to connect", Theme.Warn)));
+                status.Controls.Add(Theme.Row("Keyboard & mouse engine", engine.EngineRunning ? Theme.Status("running", Theme.Good) : Theme.Status("stopped", Theme.Bad)));
+                int live = engine.Media.Players.Values.Count(p => p.Live);
+                string shown = string.Join(", ", engine.Media.Players.Values.Select(p => $"{p.Key} <- screen {p.RemoteN}{(p.Live ? $" ({p.RemoteRes.Value.Width}x{p.RemoteRes.Value.Height})" : " (connecting)")}"));
+                status.Controls.Add(Theme.Row("Showing", Theme.Label(shown.Length > 0 ? shown : "nothing (choose on the Screens page)")));
+                int senders = engine.Media.Senders.Values.Count(s => s.P != null && !s.P.HasExited);
+                status.Controls.Add(Theme.Row("Sharing my screens", senders > 0 ? Theme.Status($"{senders} screen(s) ready to be viewed (encrypted)", Theme.Good) : Theme.Status("not yet", Theme.Warn)));
+                string ctl = engine.AgentClient.Length > 0 ? $"{Other} is controlling this computer" : engine.ForwarderConnected ? "connected (encrypted)" : "ready";
+                status.Controls.Add(Theme.Row("Remote control channel", Theme.Label(ctl)));
+                status.ResumeLayout();
+            };
+            onRefresh();
+
+            // health checks don't need a live refresh
+            void Check(string what, bool ok, string fix) => checks.Controls.Add(Theme.Status(ok ? what : what + " - " + fix, ok ? Theme.Good : Theme.Bad));
+            Check("Keyboard & mouse engine installed", CoreControl.Installed, "run the DeskView installer");
+            Check("Engine supports portals (DeskView build)", CoreControl.PortalCapable, "install the DeskView build of the engine to work directly on the other computer's picture");
+            Check("FFmpeg (video) found", engine.Media.HasFFmpeg, "run the DeskView installer (it downloads FFmpeg)");
+            Check("Firewall allows DeskView on the local network", Firewall.RulesPresent(), "run the DeskView installer once as administrator");
+            Check("Pairing code set", AppSettings.IsValidPairCode(S.PairCode), "set it on the Connection page");
+            return page;
+        }
+
+        static FlowLayoutPanel Wrap(params Control[] cs) { var p = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Margin = new Padding(0, 4, 0, 0) }; foreach (var c in cs) p.Controls.Add(c); return p; }
+
+        // ================================================================================================ Screens
+        Control ScreensPage()
+        {
+            if (S.Role == Role.Client)
+            {
+                var pc = Theme.PageBody("Screens", "View one of the server's screens full screen and control it with this computer's own keyboard and touchpad.");
+                var view = Theme.Card("View the server", "Or press Ctrl+Alt+1..9 anywhere (Ctrl+Alt+0 comes back).");
+                var row = Wrap();
+                for (int n = 1; n <= 4; n++) { int k = n; row.Controls.Add(Theme.Button($"Its screen {n}", (o, e) => engine.ShowOn(k.ToString()), S.ClientView == n)); }
+                row.Controls.Add(Theme.Button("Back to this computer", (o, e) => engine.ShowOn("off")));
+                view.Controls.Add(row);
+                pc.Controls.Add(view);
+                pc.Controls.Add(VirtualScreensCard());
+                pc.Controls.Add(VideoCard());
+                return pc;
+            }
+            var page = Theme.PageBody("Screens", $"Any of your monitors can show any of {Other}'s screens. Click a monitor to choose. " +
+                $"Move the mouse onto a monitor showing {Other} to use it - the mouse then moves across all of {Other}'s screens, so you can drag " +
+                "windows between them like a normal multi-monitor desktop.");
+            var map = Theme.Card("Your monitors");
+            var sm = new ScreenMap(engine);
+            map.Controls.Add(sm);
+            map.Controls.Add(Theme.Hint("Shortcuts: Ctrl+Alt+1..9 puts the other computer's main screen on that monitor, Ctrl+Alt+0 hides everything, Ctrl+Alt+D cycles."));
+            if (!CoreControl.PortalCapable) map.Controls.Add(Theme.Status("The installed engine has no portals: you can watch the other computer here but not work on it directly.", Theme.Warn));
+            page.Controls.Add(map);
+            page.Controls.Add(VirtualScreensCard());
+            page.Controls.Add(VideoCard());
+            onRefresh = () => sm.Invalidate();
+            return page;
+        }
+
+        Control VirtualScreensCard()
+        {
+            var c = Theme.Card("More screens on a laptop", "A laptop can get extra virtual screens that Windows treats as real monitors. They show up on the other computer's " +
+                "monitors, so its windows can be dragged across all of them. Run on the laptop (administrator approval once):");
+            var box = new TextBox { ReadOnly = true, Width = 640, Font = new Font("Consolas", 9f), Text = "$DeskViewVirtualScreens=2; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex" };
+            c.Controls.Add(box);
+            c.Controls.Add(Theme.Button("Copy command", (o, e) => Clipboard.SetText(box.Text)));
+            c.Controls.Add(Theme.Hint("Then arrange the new screens in Windows Settings > System > Display (for example to the right of the laptop screen)."));
+            return c;
+        }
+
+        Control VideoCard()
+        {
+            var c = Theme.Card("Picture", "How the other computer's screens are shown. Video runs on the graphics chip on both sides.");
+            var pic = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+            pic.Items.AddRange(new object[] { "Fit - keep its shape", "Stretch - fill the monitor" });
+            pic.SelectedIndex = S.Picture == "Stretch" ? 1 : 0;
+            var q = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+            q.Items.AddRange(new object[] { "Auto (detect wired / Wi-Fi)", "Wired - 20 Mbps, lowest delay", "Wi-Fi - 10 Mbps, steadier" });
+            q.SelectedIndex = S.Profile == "Wired" ? 1 : S.Profile == "WiFi" ? 2 : 0;
+            var inter = Theme.Check("Interactive: moving the mouse onto a picture works on that computer", S.Interactive, v => S.Interactive = v);
+            c.Controls.Add(Theme.Row("Picture", pic));
+            c.Controls.Add(Theme.Row("Quality", q));
+            if (S.Role == Role.Server) c.Controls.Add(inter);
+            c.Controls.Add(Theme.Button("Save and apply", (o, e) =>
+            {
+                S.Picture = pic.SelectedIndex == 1 ? "Stretch" : "Fit";
+                S.Profile = q.SelectedIndex == 1 ? "Wired" : q.SelectedIndex == 2 ? "WiFi" : "Auto";
+                S.Save(); engine.Media.StopPlayers(); engine.Media.StopSenders(); engine.SyncPlayers();
+                Toast("Saved");
+            }, true));
+            return c;
+        }
+
+        // ================================================================================================ Connection
+        Control ConnectionPage()
+        {
+            var page = Theme.PageBody("Connection", "Which computer shares its keyboard and mouse, how the two find each other, and the code that pairs them.");
+            var role = Theme.Card("Role", "The SERVER is the computer whose keyboard and mouse you use. The CLIENT is the other one (usually the laptop).");
+            var rServer = new RadioButton { Text = "Server - share this computer's keyboard and mouse", AutoSize = true, Checked = S.Role == Role.Server };
+            var rClient = new RadioButton { Text = "Client - use the server's keyboard and mouse", AutoSize = true, Checked = S.Role == Role.Client };
+            role.Controls.Add(rServer); role.Controls.Add(rClient);
+
+            var names = Theme.Card("Names and address");
+            var me = new TextBox { Text = S.ComputerName, Width = 260 };
+            var other = new TextBox { Text = S.RemoteName, Width = 260 };
+            var host = new TextBox { Text = S.ServerAddress, Width = 260 };
+            var port = Theme.Number(S.Port, 1, 65535, v => { }, 100);
+            names.Controls.Add(Theme.Row("This computer's name", me));
+            names.Controls.Add(Theme.Row("Other computer's name", other));
+            names.Controls.Add(Theme.Hint("Server: leave the other name empty and DeskView adds the client automatically the first time it connects."));
+            names.Controls.Add(Theme.Row("Server address (client only)", host));
+            names.Controls.Add(Theme.Row("Port", port));
+            names.Controls.Add(Theme.Row("This computer's addresses", Theme.Label(string.Join(", ", LocalAddresses()))));
+
+            var layout = Theme.Card("Where is the other computer?", "Moving the mouse off this edge of your desktop goes to the other computer. " +
+                "Pictures on your monitors work in addition to this.");
+            var side = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+            side.Items.AddRange(Enum.GetNames(typeof(Side)));
+            side.SelectedItem = S.RemoteSide.ToString();
+            layout.Controls.Add(Theme.Row("Other computer is to the", side));
+
+            var pair = Theme.Card("Pairing code", "Both computers need the same code. It protects the video and the remote control: " +
+                "nobody without it can watch or control either computer.");
+            var code = new TextBox { Text = S.PairCode, Width = 200, Font = new Font("Consolas", 12f), ReadOnly = S.Role == Role.Server, CharacterCasing = CharacterCasing.Upper };
+            pair.Controls.Add(Theme.Row("Code", code));
+            if (S.Role == Role.Server) pair.Controls.Add(Theme.Button("New code", (o, e) =>
+            {
+                if (MessageBox.Show(this, "The other computer will need the new code too. Continue?", "DeskView", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                { code.Text = AppSettings.NewPairCode(); }
+            }));
+
+            page.Controls.Add(role); page.Controls.Add(names); page.Controls.Add(layout); page.Controls.Add(pair);
+            page.Controls.Add(Theme.Button("Save and apply", (o, e) =>
+            {
+                var newRole = rServer.Checked ? Role.Server : rClient.Checked ? Role.Client : Role.None;
+                if (!AppSettings.IsValidPairCode(code.Text)) { MessageBox.Show(this, "The pairing code is 8-12 letters and digits, as shown on the server.", "DeskView"); return; }
+                if (newRole == Role.Client && string.IsNullOrWhiteSpace(host.Text)) { MessageBox.Show(this, "Enter the server's address.", "DeskView"); return; }
+                bool roleChanged = newRole != S.Role;
+                S.Role = newRole; S.ComputerName = me.Text.Trim(); S.RemoteName = other.Text.Trim(); S.ServerAddress = host.Text.Trim();
+                S.Port = (int)port.Value; S.RemoteSide = (Side)Enum.Parse(typeof(Side), (string)side.SelectedItem); S.PairCode = code.Text.Trim().ToUpperInvariant();
+                S.Save(); engine.ApplyEngine(true);
+                if (roleChanged) MessageBox.Show(this, "The role changed: restart DeskView to switch over completely.", "DeskView");
+                Toast("Saved and applied");
+            }, true));
+            return page;
+        }
+
+        static IEnumerable<string> LocalAddresses()
+        {
+            try
+            {
+                return NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                    .SelectMany(n => n.GetIPProperties().UnicastAddresses).Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork).Select(a => a.Address.ToString()).Distinct();
+            }
+            catch { return new[] { "?" }; }
+        }
+
+        // ================================================================================================ Input
+        Control InputPage()
+        {
+            var page = Theme.PageBody("Switching & input", "How the mouse moves between the computers and how keys, scrolling and the clipboard behave. " +
+                "Every switching option, with clear names.");
+            var sw = Theme.Card("Switching between computers");
+            sw.Controls.Add(Theme.Row("Wait before switching", Theme.Check("on", S.SwitchDelayEnabled, v => S.SwitchDelayEnabled = v), Theme.Number(S.SwitchDelayMs, 10, 5000, v => S.SwitchDelayMs = v), Theme.Label("ms")));
+            sw.Controls.Add(Theme.Hint("The mouse must rest at the edge this long before it switches - stops accidental switches."));
+            sw.Controls.Add(Theme.Row("Double-tap the edge to switch", Theme.Check("on", S.DoubleTapEnabled, v => S.DoubleTapEnabled = v), Theme.Number(S.DoubleTapMs, 10, 5000, v => S.DoubleTapMs = v), Theme.Label("ms")));
+            sw.Controls.Add(Theme.Check("Lock the mouse to the current computer by default (Scroll Lock toggles)", S.DefaultLockToScreen, v => S.DefaultLockToScreen = v));
+            sw.Controls.Add(Theme.Check("Never lock the mouse to one computer", S.DisableLockToScreen, v => S.DisableLockToScreen = v));
+            sw.Controls.Add(Theme.Check("Relative mouse moves (for games that capture the mouse)", S.RelativeMouseMoves, v => S.RelativeMouseMoves = v));
+            sw.Controls.Add(Theme.Check("Keep the active window in front on Windows clients", S.Win32KeepForeground, v => S.Win32KeepForeground = v));
+            var corners = Theme.Card("Dead corners", "No switching in these corners of the other computer (so its Start button or close buttons are easy to hit).");
+            corners.Controls.Add(Wrap(Theme.Check("Top left", S.CornerTopLeft, v => S.CornerTopLeft = v), Theme.Check("Top right", S.CornerTopRight, v => S.CornerTopRight = v),
+                Theme.Check("Bottom left", S.CornerBottomLeft, v => S.CornerBottomLeft = v), Theme.Check("Bottom right", S.CornerBottomRight, v => S.CornerBottomRight = v)));
+            corners.Controls.Add(Theme.Row("Corner size", Theme.Number(S.CornerSize, 0, 500, v => S.CornerSize = v), Theme.Label("pixels")));
+            var keys = Theme.Card("Keys on the other computer", "Remap modifier keys (for example Mac-style keyboards) and handle Caps/Num/Scroll Lock keys that only send one press.");
+            string[] mods = { "shift", "ctrl", "alt", "altgr", "meta", "super", "none" };
+            ComboBox Mod(string value, Action<string> set) { var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 }; c.Items.AddRange(mods); c.SelectedItem = mods.Contains(value) ? value : mods[0]; c.SelectedIndexChanged += (o, e) => set((string)c.SelectedItem); return c; }
+            keys.Controls.Add(Theme.Row("Shift / Ctrl / Alt", Mod(S.ModifierShift, v => S.ModifierShift = v), Mod(S.ModifierCtrl, v => S.ModifierCtrl = v), Mod(S.ModifierAlt, v => S.ModifierAlt = v)));
+            keys.Controls.Add(Theme.Row("AltGr / Meta / Super", Mod(S.ModifierAltGr, v => S.ModifierAltGr = v), Mod(S.ModifierMeta, v => S.ModifierMeta = v), Mod(S.ModifierSuper, v => S.ModifierSuper = v)));
+            keys.Controls.Add(Wrap(Theme.Check("Half-duplex Caps Lock", S.HalfDuplexCapsLock, v => S.HalfDuplexCapsLock = v), Theme.Check("Half-duplex Num Lock", S.HalfDuplexNumLock, v => S.HalfDuplexNumLock = v),
+                Theme.Check("Half-duplex Scroll Lock", S.HalfDuplexScrollLock, v => S.HalfDuplexScrollLock = v)));
+            var scroll = Theme.Card("Scrolling and keyboard layout (on this computer as a client)");
+            scroll.Controls.Add(Wrap(Theme.Check("Invert vertical scrolling", S.InvertScrollY, v => S.InvertScrollY = v), Theme.Check("Invert horizontal scrolling", S.InvertScrollX, v => S.InvertScrollX = v)));
+            scroll.Controls.Add(Theme.Row("Scroll speed (%)", Theme.Number((int)(S.ScrollScaleY * 100), 10, 1000, v => { S.ScrollScaleY = v / 100.0; S.ScrollScaleX = v / 100.0; })));
+            scroll.Controls.Add(Theme.Check("Follow the server's keyboard layout", S.LanguageSync, v => S.LanguageSync = v));
+            var clip = Theme.Card("Clipboard", "Copy on one computer, paste on the other.");
+            clip.Controls.Add(Theme.Check("Share the clipboard", S.ClipboardEnabled, v => S.ClipboardEnabled = v));
+            clip.Controls.Add(Theme.Row("Largest clipboard to share", Theme.Number(S.ClipboardSizeMb, 1, 1024, v => S.ClipboardSizeMb = v), Theme.Label("MB")));
+            var misc = Theme.Card("Connection health and power");
+            misc.Controls.Add(Theme.Row("Detect a dead connection", Theme.Check("on", S.HeartbeatEnabled, v => S.HeartbeatEnabled = v), Theme.Number(S.HeartbeatMs, 500, 60000, v => S.HeartbeatMs = v), Theme.Label("ms")));
+            misc.Controls.Add(Theme.Check("Keep this computer awake while connected", S.PreventSleep, v => S.PreventSleep = v));
+            foreach (var c in new Control[] { sw, corners, keys, scroll, clip, misc }) page.Controls.Add(c);
+            page.Controls.Add(Theme.Button("Save and apply", (o, e) => { S.Save(); engine.ApplyEngine(); Toast("Saved and applied"); }, true));
+            return page;
+        }
+
+        // ================================================================================================ Security
+        Control SecurityPage()
+        {
+            var page = Theme.PageBody("Security", "How DeskView keeps the two computers' traffic private on your network.");
+            var tls = Theme.Card("Keyboard and mouse traffic", "Encrypted with TLS. Each computer has a certificate; the other side remembers its fingerprint and refuses impostors.");
+            tls.Controls.Add(Theme.Check("Encrypt keyboard and mouse traffic (TLS)", S.TlsEnabled, v => S.TlsEnabled = v));
+            tls.Controls.Add(Theme.Check("Only accept a computer whose fingerprint was trusted", S.CheckPeers, v => S.CheckPeers = v));
+            var fp = CoreControl.CertificateFingerprint();
+            tls.Controls.Add(Theme.Row("This computer's fingerprint", new TextBox { ReadOnly = true, Width = 420, Font = new Font("Consolas", 8.5f), Text = fp.Length > 0 ? fp : "(no certificate yet)" }));
+            var dv = Theme.Card("Video and remote control", "Video: AES-256 (SRT) with a key derived from the pairing code. Remote control: the code is never sent - both sides prove they know it " +
+                "(PBKDF2 + HMAC challenge), then every message is AES-256 encrypted and authenticated. Only the paired computer's address is accepted; " +
+                "5 wrong attempts lock an address out for a minute. Firewall rules allow only the local network.");
+            page.Controls.Add(tls); page.Controls.Add(dv);
+            page.Controls.Add(Theme.Button("Save and apply", (o, e) => { S.Save(); engine.ApplyEngine(); Toast("Saved and applied"); }, true));
+            return page;
+        }
+
+        // ================================================================================================ Logs
+        Control LogsPage()
+        {
+            var page = Theme.PageBody("Logs", "What the engine and DeskView have been doing - useful when something does not work.");
+            var level = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+            level.Items.AddRange(new object[] { "ERROR", "WARNING", "NOTE", "INFO", "DEBUG", "DEBUG1", "DEBUG2" });
+            level.SelectedItem = S.LogLevel;
+            level.SelectedIndexChanged += (o, e) => { S.LogLevel = (string)level.SelectedItem; S.Save(); engine.ApplyEngine(); };
+            page.Controls.Add(Theme.Row("Engine detail level", level));
+            var box = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Font = new Font("Consolas", 9f), Size = new Size(700, 420), BackColor = Color.White };
+            page.Controls.Add(box);
+            page.Controls.Add(Wrap(Theme.Button("Open log folder", (o, e) => Process.Start("explorer.exe", AppSettings.Dir)),
+                                  Theme.Button("Copy", (o, e) => { if (box.Text.Length > 0) Clipboard.SetText(box.Text); })));
+            onRefresh = () =>
+            {
+                var lines = CoreControl.TailLog(200);
+                var mine = File.Exists(Log.Path) ? File.ReadAllLines(Log.Path).Reverse().Take(30).Reverse() : Enumerable.Empty<string>();
+                var text = "=== engine ===\r\n" + string.Join("\r\n", lines) + "\r\n\r\n=== DeskView ===\r\n" + string.Join("\r\n", mine);
+                if (box.Text != text) { box.Text = text; box.SelectionStart = box.Text.Length; box.ScrollToCaret(); }
+            };
+            onRefresh();
+            return page;
+        }
+
+        // ================================================================================================ About
+        Control AboutPage()
+        {
+            var page = Theme.PageBody("About DeskView", "One keyboard and mouse for several computers - and every computer's screens on any monitor, in both directions.");
+            var c = Theme.Card("Version");
+            c.Controls.Add(Theme.Row("DeskView", Theme.Label(Application.ProductVersion)));
+            c.Controls.Add(Theme.Row("Engine", Theme.Label(CoreControl.Installed ? FileVersionInfo.GetVersionInfo(CoreControl.CorePath).ProductVersion + (CoreControl.PortalCapable ? " (DeskView build)" : " (standard)") : "not installed")));
+            c.Controls.Add(Theme.Row("Project", Theme.Label("github.com/xl337x/DeskView")));
+            c.Controls.Add(Theme.Hint("Third-party components and their licenses: THIRD_PARTY_NOTICES.md in the DeskView repository. Video by FFmpeg."));
+            page.Controls.Add(c);
+            return page;
+        }
+
+        void Toast(string text) => TrayApp.Instance?.Notify(text, false);
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // closing the window keeps DeskView running in the tray
+            if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
+            base.OnFormClosing(e);
+        }
+    }
+
+    public static class Firewall
+    {
+        public static bool RulesPresent()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("netsh", "advfirewall firewall show rule name=\"DeskView video (UDP 9000-9009)\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+                using (var p = Process.Start(psi)) { p.StandardOutput.ReadToEnd(); p.WaitForExit(5000); return p.ExitCode == 0; }
+            }
+            catch { return false; }
+        }
+    }
+}
