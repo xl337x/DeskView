@@ -10,7 +10,7 @@ namespace DeskView.UI
     public class SetupWizard : Form
     {
         readonly Engine engine;
-        AppSettings S => engine.S;
+        AppSettings S { get { return engine.S; } }
         readonly Panel body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(32, 24, 32, 8), BackColor = Theme.Page };
         readonly Label stepLabel = new Label { UseMnemonic = false, Dock = DockStyle.Top, Height = 36, Font = Theme.Small, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(32, 0, 0, 0), BackColor = Theme.Page };
         readonly Button back, next;
@@ -55,7 +55,7 @@ namespace DeskView.UI
             step = Math.Max(0, Math.Min(steps.Count - 1, step + delta));
             body.Controls.Clear();
             var c = steps[step](); c.Dock = DockStyle.Fill; body.Controls.Add(c);
-            stepLabel.Text = $"Step {step + 1} of {steps.Count}";
+            stepLabel.Text = string.Format("Step {0} of {1}", step + 1, steps.Count);
             back.Enabled = step > 0;
             next.Text = step == steps.Count - 1 ? "Finish" : "Next";
         }
@@ -143,7 +143,7 @@ namespace DeskView.UI
             var list = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 360 };
             list.Items.Add("Nowhere for now");
             int i = 0;
-            foreach (var s in Tools.OrderedScreens()) { i++; list.Items.Add($"{i}. {Tools.Short(s)}  {s.Bounds.Width}x{s.Bounds.Height}{(s.Primary ? "  (main)" : "")}"); }
+            foreach (var s in Tools.OrderedScreens()) { i++; list.Items.Add(string.Format("{0}. {1}  {2}x{3}{4}", i, Tools.Short(s), s.Bounds.Width, s.Bounds.Height, (s.Primary ? "  (main)" : ""))); }
             var names = Tools.OrderedScreens().Select(Tools.Short).ToList();
             list.SelectedIndex = firstMonitor.Length > 0 && names.Contains(firstMonitor) ? names.IndexOf(firstMonitor) + 1 : (names.Count > 1 ? names.Count : 0);
             firstMonitor = list.SelectedIndex > 0 ? names[list.SelectedIndex - 1] : "";
@@ -160,7 +160,7 @@ namespace DeskView.UI
         Control DoneStep()
         {
             var p = Page("Ready", "Click Finish to save and start. DeskView then lives in the tray (bottom-right); double-click it to open this window.");
-            void Line(string what, bool ok, string fix) => p.Controls.Add(Theme.Status(ok ? what : what + " - " + fix, ok ? Theme.Good : Theme.Warn));
+            Action<string, bool, string> Line = (what, ok, fix) => p.Controls.Add(Theme.Status(ok ? what : what + " - " + fix, ok ? Theme.Good : Theme.Warn));
             Line("Keyboard & mouse engine installed", CoreControl.Installed, "run the DeskView installer first");
             Line("Video (FFmpeg) found", engine.Media.HasFFmpeg, "run the DeskView installer first");
             Line("Firewall allows DeskView", Firewall.RulesPresent(), "run the DeskView installer once as administrator");

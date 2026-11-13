@@ -13,55 +13,95 @@ namespace DeskView
 
     public class AppSettings
     {
+        public AppSettings()
+        {
+            Role = Role.None;
+            ComputerName = Environment.MachineName;
+            RemoteName = "";
+            ServerAddress = "";
+            Port = 24800;
+            Peer = "";
+            PairCode = "";
+            TlsEnabled = true;
+            CheckPeers = true;
+            Screens = new Dictionary<string, int>();
+            Profile = "Auto";
+            Interactive = true;
+            Picture = "Fit";
+            Encoder = "";
+            VideoPort = 9000;
+            ControlPort = 9002;
+            RemoteSide = Side.Right;
+            SwitchDelayMs = 250;
+            DoubleTapMs = 250;
+            HeartbeatMs = 5000;
+            ClipboardEnabled = true;
+            AlwaysShowPointer = true;
+            InputEngine = "Classic";
+            ClipboardSizeMb = 3;
+            ModifierShift = "shift";
+            ModifierCtrl = "ctrl";
+            ModifierAlt = "alt";
+            ModifierAltGr = "altgr";
+            ModifierMeta = "meta";
+            ModifierSuper = "super";
+            ScrollScaleY = 1.0;
+            ScrollScaleX = 1.0;
+            LanguageSync = true;
+            LogLevel = "INFO";
+            StartAtLogin = true;
+            StartEngineOnLaunch = true;
+        }
+
         // --- who is who ---------------------------------------------------------------------------------------
-        public Role Role { get; set; } = Role.None;
-        public string ComputerName { get; set; } = Environment.MachineName;
-        public string RemoteName { get; set; } = "";          // the other computer's name (as it calls itself)
-        public string ServerAddress { get; set; } = "";       // client: the server's address
-        public int Port { get; set; } = 24800;
-        public string Peer { get; set; } = "";                // last seen address of the other computer
+        public Role Role { get; set; }
+        public string ComputerName { get; set; }
+        public string RemoteName { get; set; }          // the other computer's name (as it calls itself)
+        public string ServerAddress { get; set; }       // client: the server's address
+        public int Port { get; set; }
+        public string Peer { get; set; }                // last seen address of the other computer
         public bool SetupDone { get; set; }
 
         // --- pairing / security ---------------------------------------------------------------------------------
-        public string PairCode { get; set; } = "";
-        public bool TlsEnabled { get; set; } = true;
-        public bool CheckPeers { get; set; } = true;
+        public string PairCode { get; set; }
+        public bool TlsEnabled { get; set; }
+        public bool CheckPeers { get; set; }
 
         // --- screens (DeskView) -----------------------------------------------------------------------------------
-        public Dictionary<string, int> Screens { get; set; } = new Dictionary<string, int>(); // server: local monitor -> client screen
+        public Dictionary<string, int> Screens { get; set; } // server: local monitor -> client screen
         public int ClientView { get; set; }                   // client: server screen being viewed, 0 = none
-        public string Profile { get; set; } = "Auto";         // Auto / Wired / WiFi
-        public bool Interactive { get; set; } = true;
-        public string Picture { get; set; } = "Fit";          // Fit / Stretch
-        public string Encoder { get; set; } = "";
-        public int VideoPort { get; set; } = 9000;
-        public int ControlPort { get; set; } = 9002;
+        public string Profile { get; set; }         // Auto / Wired / WiFi
+        public bool Interactive { get; set; }
+        public string Picture { get; set; }          // Fit / Stretch
+        public string Encoder { get; set; }
+        public int VideoPort { get; set; }
+        public int ControlPort { get; set; }
 
         // --- layout: where the other computer sits for ordinary edge switching ------------------------------------
-        public Side RemoteSide { get; set; } = Side.Right;
+        public Side RemoteSide { get; set; }
 
         // --- switching / input (server options) -----------------------------------------------------------
         public bool SwitchDelayEnabled { get; set; }
-        public int SwitchDelayMs { get; set; } = 250;
+        public int SwitchDelayMs { get; set; }
         public bool DoubleTapEnabled { get; set; }
-        public int DoubleTapMs { get; set; } = 250;
+        public int DoubleTapMs { get; set; }
         public bool RelativeMouseMoves { get; set; }
         public bool Win32KeepForeground { get; set; }
         public bool DefaultLockToScreen { get; set; }
         public bool DisableLockToScreen { get; set; }
         public bool HeartbeatEnabled { get; set; }
-        public int HeartbeatMs { get; set; } = 5000;
+        public int HeartbeatMs { get; set; }
         public bool PreventSleep { get; set; }
 
         // --- clipboard ----------------------------------------------------------------------------------------------
-        public bool ClipboardEnabled { get; set; } = true;
+        public bool ClipboardEnabled { get; set; }
         /// <summary>Client: keep the mouse pointer visible (Windows hides it when no mouse is plugged in).</summary>
-        public bool AlwaysShowPointer { get; set; } = true;
+        public bool AlwaysShowPointer { get; set; }
         /// <summary>"Classic" = the separate keyboard/mouse engine; "DeskView" = DeskView's own encrypted switching and clipboard.</summary>
-        public string InputEngine { get; set; } = "Classic";
+        public string InputEngine { get; set; }
         /// <summary>True when DeskView turned Mouse Keys on (so turning the option off undoes only our change).</summary>
         public bool PointerForcedByUs { get; set; }
-        public int ClipboardSizeMb { get; set; } = 3;
+        public int ClipboardSizeMb { get; set; }
 
         // --- the other computer's options (corners, half-duplex keys, modifier remapping) -------------------------
         public bool CornerTopLeft { get; set; }
@@ -72,29 +112,29 @@ namespace DeskView
         public bool HalfDuplexCapsLock { get; set; }
         public bool HalfDuplexNumLock { get; set; }
         public bool HalfDuplexScrollLock { get; set; }
-        public string ModifierShift { get; set; } = "shift";
-        public string ModifierCtrl { get; set; } = "ctrl";
-        public string ModifierAlt { get; set; } = "alt";
-        public string ModifierAltGr { get; set; } = "altgr";
-        public string ModifierMeta { get; set; } = "meta";
-        public string ModifierSuper { get; set; } = "super";
+        public string ModifierShift { get; set; }
+        public string ModifierCtrl { get; set; }
+        public string ModifierAlt { get; set; }
+        public string ModifierAltGr { get; set; }
+        public string ModifierMeta { get; set; }
+        public string ModifierSuper { get; set; }
 
         // --- client options --------------------------------------------------------------------------------------------
         public bool InvertScrollY { get; set; }
         public bool InvertScrollX { get; set; }
-        public double ScrollScaleY { get; set; } = 1.0;
-        public double ScrollScaleX { get; set; } = 1.0;
-        public bool LanguageSync { get; set; } = true;
+        public double ScrollScaleY { get; set; }
+        public double ScrollScaleX { get; set; }
+        public bool LanguageSync { get; set; }
 
         // --- app ---------------------------------------------------------------------------------------------------------
-        public string LogLevel { get; set; } = "INFO";
-        public bool StartAtLogin { get; set; } = true;
-        public bool StartEngineOnLaunch { get; set; } = true;
+        public string LogLevel { get; set; }
+        public bool StartAtLogin { get; set; }
+        public bool StartEngineOnLaunch { get; set; }
 
         // ------------------------------------------------------------------------------------------------------------------
         // DESKVIEW_HOME: a separate settings folder (tests use it so they never touch the real settings).
-        public static string Dir => Environment.GetEnvironmentVariable("DESKVIEW_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskView");
-        public static string FilePath => Path.Combine(Dir, "app.json");
+        public static string Dir { get { return Environment.GetEnvironmentVariable("DESKVIEW_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskView"); } }
+        public static string FilePath { get { return Path.Combine(Dir, "app.json"); } }
 
         public static AppSettings Load()
         {
@@ -129,8 +169,10 @@ namespace DeskView
             return sb.ToString();
         }
 
-        public static bool IsValidPairCode(string code) =>
-            code != null && System.Text.RegularExpressions.Regex.IsMatch(code.Trim().ToUpperInvariant(), "^[2-9A-HJKMNP-Z]{8,12}$");
+        public static bool IsValidPairCode(string code)
+        {
+            return code != null && System.Text.RegularExpressions.Regex.IsMatch(code.Trim().ToUpperInvariant(), "^[2-9A-HJKMNP-Z]{8,12}$");
+        }
 
         /// <summary>Key for the encrypted video streams (same derivation as the PowerShell DeskView).</summary>
         public string VideoKey()

@@ -14,7 +14,7 @@ namespace DeskView
 {
     public static class Tools
     {
-        public static string OppositeSide(string side) => side == "left" ? "right" : side == "right" ? "left" : side == "top" ? "bottom" : side == "bottom" ? "top" : "";
+        public static string OppositeSide(string side) { return side == "left" ? "right" : side == "right" ? "left" : side == "top" ? "bottom" : side == "bottom" ? "top" : ""; }
 
         public static string Find(string name)
         {
@@ -29,9 +29,9 @@ namespace DeskView
         }
 
         /// <summary>Monitors left to right (then top to bottom): screen n = the n-th one.</summary>
-        public static Screen[] OrderedScreens() => Screen.AllScreens.OrderBy(s => s.Bounds.X).ThenBy(s => s.Bounds.Y).ToArray();
-        public static string Short(Screen s) => s.DeviceName.Replace(@"\\.\", "");
-        public static Screen ByName(string name) => OrderedScreens().FirstOrDefault(s => Short(s) == name);
+        public static Screen[] OrderedScreens() { return Screen.AllScreens.OrderBy(s => s.Bounds.X).ThenBy(s => s.Bounds.Y).ToArray(); }
+        public static string Short(Screen s) { return s.DeviceName.Replace(@"\\.\", ""); }
+        public static Screen ByName(string name) { return OrderedScreens().FirstOrDefault(s => Short(s) == name); }
 
         /// <summary>Wired or Wi-Fi, from the adapter that carries the default route.</summary>
         public static string LinkType()
@@ -69,7 +69,7 @@ namespace DeskView
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
         public Size? RemoteRes; public string RemoteRect; public bool Passive; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
         public DateTime LastStart = DateTime.MinValue; public long ReportLen = -1; public DateTime ReportGrew = DateTime.Now;
-        public bool Live => RemoteRes.HasValue && P != null && !P.HasExited;
+        public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
 
     public class Media
@@ -79,7 +79,7 @@ namespace DeskView
         public readonly Dictionary<int, Sender> Senders = new Dictionary<int, Sender>();
         public readonly Dictionary<string, Player> Players = new Dictionary<string, Player>();
         bool cpuPath;
-        public bool HasFFmpeg => ffmpeg != null && ffplay != null;
+        public bool HasFFmpeg { get { return ffmpeg != null && ffplay != null; } }
         public event Action<string, bool> Notice;   // message, isWarning
         bool warnedLegacy;
 
@@ -87,7 +87,7 @@ namespace DeskView
 
         static readonly Dictionary<string, int> LatencyMs = new Dictionary<string, int> { { "Wired", 40 }, { "WiFi", 150 } };
         static readonly Dictionary<string, int> BitrateMbps = new Dictionary<string, int> { { "Wired", 20 }, { "WiFi", 10 } };
-        string Profile => S.Profile == "Auto" ? Tools.LinkType() : S.Profile;
+        string Profile { get { return S.Profile == "Auto" ? Tools.LinkType() : S.Profile; } }
 
         // ------------------------------------------------------------------------------------------------- encoders
         bool TestEncoder(string enc)
@@ -126,26 +126,27 @@ namespace DeskView
         {
             string prof = Profile, enc = Encoder();
             int mbps = BitrateMbps[prof]; string b = mbps + "M", buf = (mbps * 500) + "k";
-            string encArgs = enc switch
+            string encArgs;
+            switch (enc)
             {
-                "h264_nvenc" => $"-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -rc cbr -b:v {b} -maxrate {b} -bufsize {buf} -g 120 -bf 0",
-                "h264_qsv" => $"-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -b:v {b} -maxrate {b} -bufsize {buf} -g 120 -bf 0",
-                "h264_amf" => $"-c:v h264_amf -usage ultralowlatency -quality speed -rc cbr -b:v {b} -maxrate {b} -bufsize {buf} -g 120 -bf 0",
-                "h264_mf" => $"-c:v h264_mf -hw_encoding 1 -scenario display_remoting -rate_control cbr -b:v {b} -g 120 -bf 0",
-                _ => $"-c:v libx264 -preset ultrafast -tune zerolatency -b:v {b} -maxrate {b} -bufsize {buf} -g 120 -bf 0",
-            };
+                case "h264_nvenc": encArgs = "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
+                case "h264_qsv": encArgs = "-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
+                case "h264_amf": encArgs = "-c:v h264_amf -usage ultralowlatency -quality speed -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
+                case "h264_mf": encArgs = "-c:v h264_mf -hw_encoding 1 -scenario display_remoting -rate_control cbr -b:v " + b + " -g 120 -bf 0"; break;
+                default: encArgs = "-c:v libx264 -preset ultrafast -tune zerolatency -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
+            }
             int port = S.VideoPort + n - 1;
-            string url = $"srt://0.0.0.0:{port}?mode=listener&latency={LatencyMs[prof] * 1000}&pkt_size=1316&transtype=live&passphrase={S.VideoKey()}&pbkeylen=32";
+            string url = "srt://0.0.0.0:" + port + "?mode=listener&latency=" + (LatencyMs[prof] * 1000) + "&pkt_size=1316&transtype=live&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             // Frames stay on the GPU when the encoder can take them (~3x less CPU); CPU path if that keeps failing.
-            string cap = $"ddagrab=output_idx={dxgiIndex}:framerate=60:draw_mouse=1", chain, pix = "";
+            string cap = "ddagrab=output_idx=" + dxgiIndex + ":framerate=60:draw_mouse=1", chain, pix = "";
             if (!cpuPath && enc == "h264_qsv") chain = cap + ",hwmap=derive_device=qsv,format=qsv";
             else if (!cpuPath && (enc == "h264_nvenc" || enc == "h264_amf")) chain = cap;
             else { chain = cap + ",hwdownload,format=bgra"; pix = "-pix_fmt nv12"; }
             st.Gpu = !chain.Contains("hwdownload");
             var r = screen.Bounds;
             // The stream says which screen it is and where it sits, so the viewer maps its portal onto it.
-            string meta = $"DeskView|{n}|{r.X},{r.Y},{r.Width},{r.Height}";
-            st.P = Start(ffmpeg, $"-hide_banner -loglevel error -f lavfi -i {chain} {pix} {encArgs} -metadata service_name={meta} -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"{url}\"", null);
+            string meta = "DeskView|" + n + "|" + r.X + "," + r.Y + "," + r.Width + "," + r.Height;
+            st.P = Start(ffmpeg, "-hide_banner -loglevel error -f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", null);
             st.Started = DateTime.Now; st.Name = Tools.Short(screen);
         }
 
@@ -164,7 +165,8 @@ namespace DeskView
                 int n = i + 1, idx = Array.IndexOf(outputs, Tools.Short(screens[i]));
                 if (idx < 0) continue;
                 wanted.Add(n);
-                if (!Senders.TryGetValue(n, out var st)) Senders[n] = st = new Sender { N = n };
+                Sender st;
+                if (!Senders.TryGetValue(n, out st)) Senders[n] = st = new Sender { N = n };
                 if (st.P != null && !st.P.HasExited) continue;
                 if (st.P != null) { if ((DateTime.Now - st.Started).TotalSeconds < 3) st.Fails++; else st.Fails = 0; }
                 if (st.Fails >= 2 && st.Gpu) { cpuPath = true; st.Fails = 0; }
@@ -179,19 +181,19 @@ namespace DeskView
         public void StopPlayers() { foreach (var p in Players.Values) Kill(p.P); Players.Clear(); }
         public void StopPlayer(Player p) { Kill(p.P); p.P = null; }
 
-        public void SyncPlayers(IEnumerable<(string key, Screen screen, int n)> wanted, string peer)
+        public void SyncPlayers(IEnumerable<Tuple<string, Screen, int>> wanted, string peer)
         {
             var w = wanted.ToList();
             foreach (var k in Players.Keys.ToList())
             {
-                var x = w.FirstOrDefault(t => t.key == k);
-                if (x.key == null || x.n != Players[k].RemoteN || x.screen.Bounds != Players[k].Screen.Bounds) { Kill(Players[k].P); Players.Remove(k); }
+                var x = w.FirstOrDefault(t => t.Item1 == k);
+                if (x == null || x.Item3 != Players[k].RemoteN || x.Item2.Bounds != Players[k].Screen.Bounds) { Kill(Players[k].P); Players.Remove(k); }
             }
             foreach (var x in w)
-                if (!Players.ContainsKey(x.key))
+                if (!Players.ContainsKey(x.Item1))
                 {
-                    var pl = new Player { Key = x.key, Screen = x.screen, RemoteN = x.n, Report = Path.Combine(Path.GetTempPath(), "deskview-ffplay-" + Regex.Replace(x.key, @"[^\w]", "") + ".log") };
-                    Players[x.key] = pl; StartPlayer(pl, peer);
+                    var pl = new Player { Key = x.Item1, Screen = x.Item2, RemoteN = x.Item3, Report = Path.Combine(Path.GetTempPath(), "deskview-ffplay-" + Regex.Replace(x.Item1, @"[^\w]", "") + ".log") };
+                    Players[x.Item1] = pl; StartPlayer(pl, peer);
                 }
         }
 
@@ -204,19 +206,19 @@ namespace DeskView
             int port = S.VideoPort + pl.RemoteN - 1;
             // An old DeskView streams one screen unencrypted: after two failed encrypted attempts, alternate.
             pl.Legacy = pl.Fails >= 2 && pl.Fails % 2 == 1;
-            string enc = pl.Legacy ? "" : $"&passphrase={S.VideoKey()}&pbkeylen=32";
-            string url = $"srt://{Tools.Host(peer)}:{port}?mode=caller&latency={LatencyMs[prof] * 1000}&transtype=live&connect_timeout=3000{enc}";
-            string vf = S.Picture == "Stretch" ? $"-vf scale={r.Width}:{r.Height} " : "";
+            string enc = pl.Legacy ? "" : "&passphrase=" + S.VideoKey() + "&pbkeylen=32";
+            string url = "srt://" + Tools.Host(peer) + ":" + port + "?mode=caller&latency=" + (LatencyMs[prof] * 1000) + "&transtype=live&connect_timeout=3000" + enc;
+            string vf = S.Picture == "Stretch" ? "-vf scale=" + r.Width + ":" + r.Height + " " : "";
             string hw = pl.Fails < 4 ? "-hwaccel d3d11va " : "";   // GPU decode: ~3.5x less CPU
             try { File.Delete(pl.Report); } catch { }
             var env = new Dictionary<string, string>
             {
-                ["SDL_WINDOWS_DPI_AWARENESS"] = "permonitorv2",
-                ["FFREPORT"] = "file=" + pl.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32",
+                { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" },
+                { "FFREPORT", "file=" + pl.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" },
             };
             // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
             string probe = pl.Legacy || pl.Fails >= 2 ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
-            pl.P = Start(ffplay, $"-hide_banner -loglevel error {hw}-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext {probe} -an -noborder -alwaysontop {vf}-left {r.X} -top {r.Y} -x {r.Width} -y {r.Height} -window_title DeskView \"{url}\"", env);
+            pl.P = Start(ffplay, "-hide_banner -loglevel error " + hw + "-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext " + probe + " -an -noborder -alwaysontop " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
             pl.LastStart = DateTime.Now; pl.ReportLen = -1; pl.ReportGrew = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
         }
 
@@ -232,7 +234,7 @@ namespace DeskView
                     {
                         pl.Fails++;
                         // say so instead of leaving an empty monitor: the other computer is not sending this screen
-                        if (pl.Fails == 3 && !pl.WarnedDown) { pl.WarnedDown = true; Notice?.Invoke($"No picture from {S.RemoteName} screen {pl.RemoteN} yet. Make sure DeskView is running there (same pairing code) and it is on the network.", true); }
+                        if (pl.Fails == 3 && !pl.WarnedDown) { pl.WarnedDown = true; var n = Notice; if (n != null) n("No picture from " + S.RemoteName + " screen " + pl.RemoteN + " yet. Make sure DeskView is running there (same pairing code) and it is on the network.", true); }
                     }
                     pl.P = null;
                     if ((DateTime.Now - pl.LastStart).TotalSeconds >= 2) StartPlayer(pl, peer);
@@ -252,17 +254,19 @@ namespace DeskView
                     pl.ReportGrew = DateTime.Now; Kill(pl.P); pl.P = null; continue;
                 }
                 var info = ReadInfo(pl.Report);
-                if (info != null && (pl.RemoteRes != info.Value.size || pl.RemoteRect != info.Value.rect))
+                if (info != null && (pl.RemoteRes != info.size || pl.RemoteRect != info.rect))
                 {
-                    pl.RemoteRes = info.Value.size; pl.RemoteRect = info.Value.rect; pl.Fails = 0; pl.EverLive = true; changed = true;
-                    if (!pl.Announced) { pl.Announced = true; pl.WarnedDown = false; Notice?.Invoke($"{S.RemoteName} screen {pl.RemoteN} is now on {pl.Key} ({info.Value.size.Width}x{info.Value.size.Height})", false); }
-                    if (pl.Legacy && !warnedLegacy) { warnedLegacy = true; Notice?.Invoke("The other computer runs an old DeskView: its picture is not encrypted. Update it.", true); }
+                    pl.RemoteRes = info.size; pl.RemoteRect = info.rect; pl.Fails = 0; pl.EverLive = true; changed = true;
+                    if (!pl.Announced) { pl.Announced = true; pl.WarnedDown = false; var n = Notice; if (n != null) n(S.RemoteName + " screen " + pl.RemoteN + " is now on " + pl.Key + " (" + info.size.Width + "x" + info.size.Height + ")", false); }
+                    if (pl.Legacy && !warnedLegacy) { warnedLegacy = true; var n = Notice; if (n != null) n("The other computer runs an old DeskView: its picture is not encrypted. Update it.", true); }
                 }
             }
             return changed;
         }
 
-        static (Size size, string rect)? ReadInfo(string report)
+        class Info { public Size size; public string rect; }
+
+        static Info ReadInfo(string report)
         {
             try
             {
@@ -271,7 +275,7 @@ namespace DeskView
                 var m = Regex.Match(text, @"Video: [^\r\n]*?, (\d{2,5})x(\d{2,5})[ ,\[]");
                 if (!m.Success) return null;
                 var r = Regex.Match(text, @"DeskView\|\d+\|(-?\d+),(-?\d+),(\d+),(\d+)");
-                return (new Size(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value)), r.Success ? $"{r.Groups[1].Value},{r.Groups[2].Value},{r.Groups[3].Value},{r.Groups[4].Value}" : null);
+                return new Info { size = new Size(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value)), rect = r.Success ? r.Groups[1].Value + "," + r.Groups[2].Value + "," + r.Groups[3].Value + "," + r.Groups[4].Value : null };
             }
             catch { return null; }
         }

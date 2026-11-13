@@ -9,7 +9,8 @@ $home2 = Join-Path $env:TEMP "deskview-gui-qa-home"; $shots = Join-Path $env:TEM
 foreach ($d in $home2, $shots) { if (Test-Path $d) { Remove-Item $d -Recurse -Force }; New-Item -ItemType Directory $d | Out-Null }
 $env:DESKVIEW_HOME = $home2; $env:DESKVIEW_DRYRUN = '1'; $env:DESKVIEW_NOMEDIA = '1'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, System.Web.Extensions
-$asm = [Reflection.Assembly]::LoadFile((Resolve-Path (Join-Path $PSScriptRoot '..\gui\bin\DeskView.exe')).Path)
+& (Join-Path $PSScriptRoot '..\app\DeskView.ps1') -LoadOnly   # exactly what users run
+$asm = [DeskView.Program].Assembly
 function T($n) { $asm.GetType($n, $true) }
 $bf = [Reflection.BindingFlags]'Public,NonPublic,Static,Instance'
 $script:pass = 0; $script:fail = 0; $script:dialogs = New-Object System.Collections.ArrayList

@@ -25,13 +25,14 @@ namespace DeskView.UI
             MouseClick += (o, ev) => { var h = HitTest(ev.Location); if (h != null) ShowMenu(h, ev.Location); };
         }
 
-        string HitTest(Point p) => hit.FirstOrDefault(kv => kv.Value.Contains(p)).Key;
+        string HitTest(Point p) { return hit.FirstOrDefault(kv => kv.Value.Contains(p)).Key; }
 
         void ShowMenu(string monitor, Point at)
         {
             if (engine.S.Role != Role.Server) return;
             var menu = new ContextMenuStrip { Font = Theme.Body };
-            int cur = engine.S.Screens.TryGetValue(monitor, out var n) ? n : 0;
+            int n;
+            int cur = engine.S.Screens.TryGetValue(monitor, out n) ? n : 0;
             var own = new ToolStripMenuItem("Its own desktop") { Checked = cur == 0 };
             own.Click += (o, e) => { engine.SetScreen(monitor, 0); Invalidate(); };
             menu.Items.Add(own);
@@ -40,7 +41,7 @@ namespace DeskView.UI
             for (int k = 1; k <= 4; k++)
             {
                 int kk = k;
-                var it = new ToolStripMenuItem($"Show {name}'s screen {k}" + (k == 1 ? "  (its main screen)" : "")) { Checked = cur == k };
+                var it = new ToolStripMenuItem(string.Format("Show {0}'s screen {1}", name, k) + (k == 1 ? "  (its main screen)" : "")) { Checked = cur == k };
                 it.Click += (o, e) => { engine.SetScreen(monitor, kk); Invalidate(); };
                 menu.Items.Add(it);
             }
@@ -63,16 +64,18 @@ namespace DeskView.UI
                 var name = Tools.Short(s);
                 var r = new RectangleF(ox + (s.Bounds.X - all.X) * scale + 4, oy + (s.Bounds.Y - all.Y) * scale + 4, s.Bounds.Width * scale - 8, s.Bounds.Height * scale - 8);
                 hit[name] = r;
-                int shows = engine.S.Role == Role.Server && engine.S.Screens.TryGetValue(name, out var n) ? n : 0;
-                engine.Media.Players.TryGetValue(name, out var pl);
+                int n;
+                int shows = engine.S.Role == Role.Server && engine.S.Screens.TryGetValue(name, out n) ? n : 0;
+                Player pl;
+                engine.Media.Players.TryGetValue(name, out pl);
                 var fill = shows > 0 ? Theme.Accent : Color.FromArgb(243, 244, 246);
                 if (hover == name) fill = shows > 0 ? Theme.AccentDark : Color.FromArgb(229, 231, 235);
                 using (var path = Rounded(r, 8)) using (var b = new SolidBrush(fill)) using (var pen = new Pen(shows > 0 ? Theme.AccentDark : Theme.Border, 2))
                 { g.FillPath(b, path); g.DrawPath(pen, path); }
                 var fg = shows > 0 ? Color.White : Theme.Text;
-                string line1 = $"{num}. {name}" + (s.Primary ? " (main)" : "");
+                string line1 = string.Format("{0}. {1}", num, name) + (s.Primary ? " (main)" : "");
                 string line2 = shows > 0
-                    ? $"{(string.IsNullOrEmpty(engine.S.RemoteName) ? "other" : engine.S.RemoteName)} - screen {shows}" + (pl != null && pl.Live ? $"\n{pl.RemoteRes.Value.Width}x{pl.RemoteRes.Value.Height}  live" : "\nconnecting...")
+                    ? string.Format("{0} - screen {1}", (string.IsNullOrEmpty(engine.S.RemoteName) ? "other" : engine.S.RemoteName), shows) + (pl != null && pl.Live ? string.Format("\n{0}x{1}  live", pl.RemoteRes.Value.Width, pl.RemoteRes.Value.Height) : "\nconnecting...")
                     : "own desktop";
                 using (var f1 = new Font("Segoe UI Semibold", 10f)) using (var f2 = new Font("Segoe UI", 9f)) using (var bfg = new SolidBrush(fg))
                 {

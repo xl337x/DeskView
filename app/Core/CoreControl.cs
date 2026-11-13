@@ -13,31 +13,31 @@ namespace DeskView
 {
     public static class CoreControl
     {
-        public static string InstallDir => @"C:\Program Files\Deskflow";
-        public static string CorePath => Path.Combine(InstallDir, "deskflow-core.exe");
-        public static bool Installed => File.Exists(CorePath);
+        public static string InstallDir { get { return @"C:\Program Files\Deskflow"; } }
+        public static string CorePath { get { return Path.Combine(InstallDir, "deskflow-core.exe"); } }
+        public static bool Installed { get { return File.Exists(CorePath); } }
         /// <summary>The engine understands portals (the DeskView build).</summary>
-        public static bool PortalCapable => File.Exists(Path.Combine(InstallDir, "deskview.txt"));
-        public static string ConfigPath => Path.Combine(AppSettings.Dir, "engine.conf");
-        public static string LayoutPath => Path.Combine(AppSettings.Dir, "layout.conf");
-        public static string TlsDir => @"C:\ProgramData\Deskflow\tls";
-        public static string CertificatePath => Path.Combine(TlsDir, "deskflow.pem");
-        public static string ServiceLog => @"C:\ProgramData\Deskflow\deskflow-daemon.log";
+        public static bool PortalCapable { get { return File.Exists(Path.Combine(InstallDir, "deskview.txt")); } }
+        public static string ConfigPath { get { return Path.Combine(AppSettings.Dir, "engine.conf"); } }
+        public static string LayoutPath { get { return Path.Combine(AppSettings.Dir, "layout.conf"); } }
+        public static string TlsDir { get { return @"C:\ProgramData\Deskflow\tls"; } }
+        public static string CertificatePath { get { return Path.Combine(TlsDir, "deskflow.pem"); } }
+        public static string ServiceLog { get { return @"C:\ProgramData\Deskflow\deskflow-daemon.log"; } }
         const string PipeName = "deskflow-daemon";
 
         // ---------------------------------------------------------------------------------------------------------
         // engine settings (an INI file in Qt's format)
         // ---------------------------------------------------------------------------------------------------------
-        static string B(bool v) => v ? "true" : "false";
-        static string Q(string v) => "\"" + (v ?? "").Replace("\\", "/").Replace("\"", "") + "\"";
+        static string B(bool v) { return v ? "true" : "false"; }
+        static string Q(string v) { return "\"" + (v ?? "").Replace("\\", "/").Replace("\"", "") + "\""; }
 
         /// <summary>Write the engine settings and layout. Returns true if anything changed (engine needs a restart).</summary>
         public static bool WriteConfig(AppSettings s, string portal)
         {
             var me = Safe(s.ComputerName); var other = Safe(s.RemoteName);
             var ini = new StringBuilder();
-            void Section(string name) { ini.Append("\r\n[").Append(name).Append("]\r\n"); }
-            void Kv(string k, string v) { ini.Append(k).Append('=').Append(v).Append("\r\n"); }
+            Action<string> Section = name => { ini.Append("\r\n[").Append(name).Append("]\r\n"); };
+            Action<string, string> Kv = (k, v) => { ini.Append(k).Append('=').Append(v).Append("\r\n"); };
 
             Section("core");
             Kv("coreMode", s.Role == Role.Server ? "2" : s.Role == Role.Client ? "1" : "0");
@@ -121,12 +121,12 @@ namespace DeskView
         }
 
         /// <summary>Only the portal changed: the engine re-reads it by itself within a second (no restart).</summary>
-        public static bool UpdatePortal(AppSettings s, string portal) => WriteConfig(s, portal);
+        public static bool UpdatePortal(AppSettings s, string portal) { return WriteConfig(s, portal); }
 
         // The engine's layout file calls the top and bottom edges "up" and "down".
-        static string EdgeName(Side side) => side switch { Side.Left => "left", Side.Right => "right", Side.Top => "up", Side.Bottom => "down", _ => "" };
-        static string Opposite(Side side) => side switch { Side.Left => "right", Side.Right => "left", Side.Top => "down", Side.Bottom => "up", _ => "" };
-        static string Safe(string name) => new string((name ?? "").Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.').ToArray());
+        static string EdgeName(Side side) { switch (side) { case Side.Left: return "left"; case Side.Right: return "right"; case Side.Top: return "up"; case Side.Bottom: return "down"; default: return ""; } }
+        static string Opposite(Side side) { switch (side) { case Side.Left: return "right"; case Side.Right: return "left"; case Side.Top: return "down"; case Side.Bottom: return "up"; default: return ""; } }
+        static string Safe(string name) { return new string((name ?? "").Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.').ToArray()); }
 
         static bool WriteIfChanged(string path, string text)
         {
@@ -140,7 +140,8 @@ namespace DeskView
         // ---------------------------------------------------------------------------------------------------------
         // the engine service (its pipe protocol: one "command=argument" line per message)
         // ---------------------------------------------------------------------------------------------------------
-        public static string LastError { get; private set; } = "";
+        static string _lastError = "";
+        public static string LastError { get { return _lastError; } private set { _lastError = value; } }
         /// <summary>DESKVIEW_DRYRUN=1: never talk to the engine service; record what would have been sent (tests).</summary>
         public static readonly bool DryRun = Environment.GetEnvironmentVariable("DESKVIEW_DRYRUN") == "1";
         public static readonly List<string> Sent = new List<string>();
@@ -184,7 +185,7 @@ namespace DeskView
             return Send("configFile=" + ConfigPath.Replace('\\', '/'), "logLevel=" + "INFO", "start");
         }
 
-        public static bool Stop() => Send("stop");
+        public static bool Stop() { return Send("stop"); }
 
         /// <summary>The engine's own window would give the service its own settings: close it, DeskView manages the engine now.</summary>
         public static void StopForeignGui()
@@ -194,7 +195,7 @@ namespace DeskView
         }
 
         /// <summary>Is an engine process running right now?</summary>
-        public static bool Running => Process.GetProcessesByName("deskflow-core").Length > 0;
+        public static bool Running { get { return Process.GetProcessesByName("deskflow-core").Length > 0; } }
 
         // ---------------------------------------------------------------------------------------------------------
         // what the engine is doing, from the service log

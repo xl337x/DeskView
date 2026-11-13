@@ -28,18 +28,21 @@ namespace DeskView
         public event Action Changed;                  // something the UI shows changed
         public event Action<string, bool> Notice;     // message, isWarning
 
+        void OnChanged() { var h = Changed; if (h != null) h(); }
+        void OnNotice(string message, bool warning) { var h = Notice; if (h != null) h(message, warning); }
+
         public Engine(AppSettings settings)
         {
             S = settings;
             Media = new Media(S);
-            Media.Notice += (m, w) => Notice?.Invoke(m, w);
+            Media.Notice += (m, w) => OnNotice(m, w);
         }
 
         // ------------------------------------------------------------------------------------------------- state
-        public bool Connected => !string.IsNullOrEmpty(CurrentPeer());
-        public bool EngineRunning => Builtin ? forwarder.Connected || agent.Client.Length > 0 : CoreControl.Running;
+        public bool Connected { get { return !string.IsNullOrEmpty(CurrentPeer()); } }
+        public bool EngineRunning { get { return Builtin ? forwarder.Connected || agent.Client.Length > 0 : CoreControl.Running; } }
         /// <summary>DeskView's own switching and clipboard instead of the separate engine.</summary>
-        public bool Builtin => S.InputEngine == "DeskView";
+        public bool Builtin { get { return S.InputEngine == "DeskView"; } }
         /// <summary>The side of this desktop that leads to the other computer.</summary>
         string EdgeName
         {
@@ -50,9 +53,9 @@ namespace DeskView
                 return S.Role == Role.Server ? name : DeskView.Tools.OppositeSide(name);
             }
         }
-        public string AgentClient => agent.Client;
-        public bool ForwarderConnected => forwarder.Connected;
-        public string ForwarderStatus => forwarder.Status;
+        public string AgentClient { get { return agent.Client; } }
+        public bool ForwarderConnected { get { return forwarder.Connected; } }
+        public string ForwarderStatus { get { return forwarder.Status; } }
 
         /// <summary>The other computer's address, from the live keyboard/mouse connection.</summary>
         public string CurrentPeer()
@@ -93,7 +96,7 @@ namespace DeskView
             agent.VL = all.Min(s => s.Bounds.Left); agent.VR = all.Max(s => s.Bounds.Right);
             agent.AvoidLeftEdge = agent.AvoidRightEdge = S.Role == Role.Server;   // The engine's links sit on the outer edges
             SetAgentScreen("1");
-            try { agent.Start(); } catch { Notice?.Invoke($"Control port {S.ControlPort} is in use - control from the other computer is off.", true); }
+            try { agent.Start(); } catch { OnNotice(string.Format("Control port {0} is in use - control from the other computer is off.", S.ControlPort), true); }
             forwarder.Port = S.ControlPort; forwarder.Code = S.PairCode;
             if (S.Role == Role.Client) forwarder.Peer = Peer() ?? "";
             ApplyBuiltin();
@@ -152,21 +155,21 @@ namespace DeskView
             if (changed || forceStart || !CoreControl.Running)
             {
                 if (S.StartEngineOnLaunch || forceStart || changed)
-                    if (!CoreControl.Start()) Notice?.Invoke(CoreControl.LastError, true);
+                    if (!CoreControl.Start()) OnNotice(CoreControl.LastError, true);
             }
         }
 
-        public void RestartEngine() { CoreControl.Stop(); System.Threading.Thread.Sleep(500); if (!CoreControl.Start()) Notice?.Invoke(CoreControl.LastError, true); }
-        public void StopEngine() => CoreControl.Stop();
+        public void RestartEngine() { CoreControl.Stop(); System.Threading.Thread.Sleep(500); if (!CoreControl.Start()) OnNotice(CoreControl.LastError, true); }
+        public void StopEngine() { CoreControl.Stop(); }
 
         // ------------------------------------------------------------------------------------------------- screens
-        IEnumerable<(string, Screen, int)> WantedPlayers()
+        IEnumerable<Tuple<string, Screen, int>> WantedPlayers()
         {
             if (S.Role == Role.Server)
             {
-                foreach (var kv in S.Screens) { var m = Tools.ByName(kv.Key); if (m != null && kv.Value > 0) yield return (kv.Key, m, kv.Value); }
+                foreach (var kv in S.Screens) { var m = Tools.ByName(kv.Key); if (m != null && kv.Value > 0) yield return Tuple.Create(kv.Key, m, kv.Value); }
             }
-            else if (S.Role == Role.Client && S.ClientView > 0) yield return ("view", Screen.PrimaryScreen, S.ClientView);
+            else if (S.Role == Role.Client && S.ClientView > 0) yield return Tuple.Create("view", Screen.PrimaryScreen, S.ClientView);
         }
 
         public void SyncPlayers()
@@ -182,7 +185,7 @@ namespace DeskView
                 UpdateForwarderPicture();
                 forwarder.Active = true;
             }
-            Changed?.Invoke();
+            OnChanged();
         }
 
         /// <summary>Server: monitor shows the other computer's screen n (0 = its own desktop again).</summary>
@@ -201,26 +204,28 @@ namespace DeskView
             if (string.IsNullOrEmpty(want) || want.Equals("off", StringComparison.OrdinalIgnoreCase))
             {
                 if (S.Role == Role.Server) S.Screens.Clear(); else S.ClientView = 0;
-                S.Save(); SyncPlayers(); Notice?.Invoke(S.Role == Role.Server ? "Other computer's screens off" : "Back to this computer", false); return;
+                S.Save(); SyncPlayers(); OnNotice(S.Role == Role.Server ? "Other computer's screens off" : "Back to this computer", false); return;
             }
+            int n;
             if (S.Role == Role.Server)
             {
                 var name = ResolveMonitor(want);
-                if (name == null) { Notice?.Invoke("There is no monitor " + want + ".", true); return; }
+                if (name == null) { OnNotice("There is no monitor " + want + ".", true); return; }
                 SetScreen(name, 1);
-                Notice?.Invoke($"Connecting to {S.RemoteName}'s screen for {name}...", false);
+                OnNotice(string.Format("Connecting to {0}'s screen for {1}...", S.RemoteName, name), false);
             }
-            else if (int.TryParse(want, out int n) && n >= 1 && n <= 9)
+            else if (int.TryParse(want, out n) && n >= 1 && n <= 9)
             {
                 S.ClientView = n; LastOn = want; S.Save(); SyncPlayers();
-                Notice?.Invoke($"Viewing the other computer's screen {n} - Ctrl+Alt+0 to come back", false);
+                OnNotice(string.Format("Viewing the other computer's screen {0} - Ctrl+Alt+0 to come back", n), false);
             }
         }
 
         public static string ResolveMonitor(string want)
         {
             var list = Tools.OrderedScreens();
-            if (int.TryParse(want, out int i)) return i >= 1 && i <= list.Length ? Tools.Short(list[i - 1]) : null;
+            int i;
+            if (int.TryParse(want, out i)) return i >= 1 && i <= list.Length ? Tools.Short(list[i - 1]) : null;
             var s = list.FirstOrDefault(x => Tools.Short(x).Equals(want, StringComparison.OrdinalIgnoreCase));
             return s == null ? null : Tools.Short(s);
         }
@@ -262,10 +267,10 @@ namespace DeskView
             for (int i = 0; i < pls.Count; i++)
             {
                 var r = rects[i];
-                var e = $"{r.X},{r.Y},{r.Width},{r.Height},{ExitSides(r, rects.Where((x, j) => j != i).ToList())}";
+                var e = string.Format("{0},{1},{2},{3},{4}", r.X, r.Y, r.Width, r.Height, ExitSides(r, rects.Where((x, j) => j != i).ToList()));
                 if (pls[i].RemoteRect != null) e += "@" + pls[i].RemoteRect;
                 // an older sender doesn't say where its screen is: its screen 1 is the main screen, at 0,0
-                else if (pls[i].RemoteRes.HasValue && pls[i].RemoteN == 1) e += $"@0,0,{pls[i].RemoteRes.Value.Width},{pls[i].RemoteRes.Value.Height}";
+                else if (pls[i].RemoteRes.HasValue && pls[i].RemoteN == 1) e += string.Format("@0,0,{0},{1}", pls[i].RemoteRes.Value.Width, pls[i].RemoteRes.Value.Height);
                 entries.Add(e);
             }
             return string.Join(";", entries);
@@ -276,15 +281,15 @@ namespace DeskView
         static string ExitSides(System.Drawing.Rectangle r, List<System.Drawing.Rectangle> others)
         {
             var mons = Screen.AllScreens.Select(s => s.Bounds).ToList();
-            bool Ok(int x, int y) => !others.Any(o => o.Contains(x, y)) && mons.Any(m => m.Contains(x, y));
-            bool Covered(IEnumerable<(int, int)> pts) => pts.All(p => Ok(p.Item1, p.Item2));
+            Func<int, int, bool> Ok = (x, y) => !others.Any(o => o.Contains(x, y)) && mons.Any(m => m.Contains(x, y));
+            Func<IEnumerable<Tuple<int, int>>, bool> Covered = pts => pts.All(p => Ok(p.Item1, p.Item2));
             var ys = Enumerable.Range(0, 21).Select(k => r.Top + (r.Height - 1) * k / 20).ToList();
             var xs = Enumerable.Range(0, 21).Select(k => r.Left + (r.Width - 1) * k / 20).ToList();
             string sides = "";
-            if (Covered(ys.Select(y => (r.Left - 1, y)))) sides += "L";
-            if (Covered(ys.Select(y => (r.Right, y)))) sides += "R";
-            if (Covered(xs.Select(x => (x, r.Top - 1)))) sides += "T";
-            if (Covered(xs.Select(x => (x, r.Bottom)))) sides += "B";
+            if (Covered(ys.Select(y => Tuple.Create(r.Left - 1, y)))) sides += "L";
+            if (Covered(ys.Select(y => Tuple.Create(r.Right, y)))) sides += "R";
+            if (Covered(xs.Select(x => Tuple.Create(x, r.Top - 1)))) sides += "T";
+            if (Covered(xs.Select(x => Tuple.Create(x, r.Bottom)))) sides += "B";
             return sides.Length == 0 ? "LRTB" : sides;
         }
 
@@ -309,7 +314,8 @@ namespace DeskView
 
         void UpdateForwarderPicture()
         {
-            if (!Media.Players.TryGetValue("view", out var pl)) return;
+            Player pl;
+            if (!Media.Players.TryGetValue("view", out pl)) return;
             var r = Media.PictureRect(pl);
             forwarder.VidL = r.X; forwarder.VidT = r.Y; forwarder.VidW = r.Width; forwarder.VidH = r.Height;
         }
@@ -319,10 +325,14 @@ namespace DeskView
         void UpdateDropZones()
         {
             foreach (var k in zones.Keys.ToList())
-                if (!Media.Players.TryGetValue(k, out var p) || p.RemoteRes == null) { zones[k].Close(); zones.Remove(k); }
+            {
+                Player p;
+                if (!Media.Players.TryGetValue(k, out p) || p.RemoteRes == null) { zones[k].Close(); zones.Remove(k); }
+            }
             foreach (var pl in Media.Players.Values.Where(p => p.RemoteRes != null))
             {
-                if (!zones.TryGetValue(pl.Key, out var z))
+                DeskViewDropZone z;
+                if (!zones.TryGetValue(pl.Key, out z))
                 {
                     z = new DeskViewDropZone { Target = S.Role == Role.Server ? (string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName) : "the server" };
                     z.Dropped += SendFiles;
@@ -336,28 +346,29 @@ namespace DeskView
         public void SendFiles(string[] files)
         {
             var peer = Peer();
-            if (string.IsNullOrEmpty(peer)) { Notice?.Invoke("The other computer is not connected.", true); return; }
+            if (string.IsNullOrEmpty(peer)) { OnNotice("The other computer is not connected.", true); return; }
             transfers.Add(DeskViewTransfer.Start(Tools.Host(peer).Trim('[', ']'), S.ControlPort, S.PairCode, files));
-            Notice?.Invoke($"Sending {files.Length} item(s)...", false);
+            OnNotice(string.Format("Sending {0} item(s)...", files.Length), false);
         }
 
         void ServiceFiles()
         {
             foreach (var tr in transfers.Where(x => x.Done).ToList())
             {
-                Notice?.Invoke(tr.Error != null ? "Sending failed: " + tr.Error : "Sent: " + string.Join(", ", tr.Paths.Select(Path.GetFileName)), tr.Error != null);
+                OnNotice(tr.Error != null ? "Sending failed: " + tr.Error : "Sent: " + string.Join(", ", tr.Paths.Select(Path.GetFileName)), tr.Error != null);
                 transfers.Remove(tr);
             }
             var got = new List<string>();
-            while (agent.Received.TryDequeue(out var p)) got.Add(p);
+            string p;
+            while (agent.Received.TryDequeue(out p)) got.Add(p);
             if (got.Count == 0) return;
-            Notice?.Invoke($"Received {got.Count} file(s) in Downloads\\DeskView: " + string.Join(", ", got.Take(3).Select(Path.GetFileName)), false);
+            OnNotice(string.Format("Received {0} file(s) in Downloads\\DeskView: ", got.Count) + string.Join(", ", got.Take(3).Select(Path.GetFileName)), false);
             if ((DateTime.Now - lastReceivedNotice).TotalSeconds > 5) System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + got.Last() + "\"");
             lastReceivedNotice = DateTime.Now;
         }
 
         // ------------------------------------------------------------------------------------------------- heartbeat
-        static string LayoutSignature() => string.Join(";", Tools.OrderedScreens().Select(s => s.DeviceName + "=" + s.Bounds));
+        static string LayoutSignature() { return string.Join(";", Tools.OrderedScreens().Select(s => s.DeviceName + "=" + s.Bounds)); }
 
         void Tick()
         {
@@ -378,7 +389,7 @@ namespace DeskView
                 // leave a black window on that monitor: give the monitor back after 6 failed attempts and say why.
                 foreach (var pl in Media.Players.Values.Where(p => !p.EverLive && p.Fails >= 6).ToList())
                 {
-                    Notice?.Invoke($"{(string.IsNullOrEmpty(S.RemoteName) ? "The other computer" : S.RemoteName)} has no screen {pl.RemoteN} (or isn't sharing it yet) - {pl.Key} shows its own desktop again.", true);
+                    OnNotice(string.Format("{0} has no screen {1} (or isn't sharing it yet) - {2} shows its own desktop again.", string.IsNullOrEmpty(S.RemoteName) ? "The other computer" : S.RemoteName, pl.RemoteN, pl.Key), true);
                     Media.StopPlayer(pl); Media.Players.Remove(pl.Key);
                     if (S.Role == Role.Server) S.Screens.Remove(pl.Key); else S.ClientView = 0;
                     S.Save(); SyncPlayers();
@@ -387,7 +398,7 @@ namespace DeskView
                 {
                     UpdateDropZones();
                     if (S.Role == Role.Server) UpdatePortals(); else UpdateForwarderPicture();
-                    Changed?.Invoke();
+                    OnChanged();
                 }
 
                 if ((DateTime.Now - lastSlow).TotalSeconds >= 2)
@@ -400,13 +411,13 @@ namespace DeskView
                         var all = Screen.AllScreens;
                         agent.VL = all.Min(s => s.Bounds.Left); agent.VR = all.Max(s => s.Bounds.Right);
                         Media.StopSenders(); Media.StopPlayers(); lastPortal = null; SyncPlayers();
-                        Notice?.Invoke("Monitor layout changed - adjusted.", false);
+                        OnNotice("Monitor layout changed - adjusted.", false);
                     }
                     var before = S.Peer; Peer();
                     if (S.Role == Role.Client && S.Peer != before) forwarder.Peer = S.Peer;
                     if (Builtin && S.Role == Role.Server && !string.IsNullOrEmpty(S.Peer) && forwarder.Peer != S.Peer) forwarder.Peer = S.Peer;
                     LearnRemoteName();
-                    Changed?.Invoke();
+                    OnChanged();
                 }
             }
             catch (Exception e) { Log.Write("tick: " + e.Message); }
@@ -422,7 +433,7 @@ namespace DeskView
                 if (m.Success)
                 {
                     S.RemoteName = m.Groups[1].Value; S.Save();
-                    Notice?.Invoke($"{S.RemoteName} is connecting - added it.", false);
+                    OnNotice(string.Format("{0} is connecting - added it.", S.RemoteName), false);
                     ApplyEngine(true);
                     return;
                 }
@@ -433,14 +444,14 @@ namespace DeskView
     /// <summary>DeskView's own log (%APPDATA%\DeskView\deskview.log).</summary>
     public static class Log
     {
-        public static string Path => System.IO.Path.Combine(AppSettings.Dir, "deskview.log");
+        public static string Path { get { return System.IO.Path.Combine(AppSettings.Dir, "deskview.log"); } }
         public static void Write(string line)
         {
             try
             {
                 Directory.CreateDirectory(AppSettings.Dir);
-                File.AppendAllText(Path, $"[{DateTime.Now:yyyy-MM-ddTHH:mm:ss}] {line}\r\n");
-                var fi = new FileInfo(Path); if (fi.Length > 2_000_000) File.Delete(Path);
+                File.AppendAllText(Path, string.Format("[{0:yyyy-MM-ddTHH:mm:ss}] {1}\r\n", DateTime.Now, line));
+                var fi = new FileInfo(Path); if (fi.Length > 2000000) File.Delete(Path);
             }
             catch { }
         }
