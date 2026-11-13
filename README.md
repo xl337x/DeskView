@@ -54,6 +54,19 @@ the monitor), **Quality** (*Auto*, *Wired* 20 Mbps, *Wi-Fi* 10 Mbps) and **Inter
 Command line: `DeskView.ps1 -Show 2` (or `DISPLAY2`, or `Off`) controls the running copy; on the server
 `-Show 2=1` puts the client's screen 1 on monitor 2 (`2=0` gives monitor 2 its own desktop back).
 
+## Built-in keyboard & mouse engine (new)
+
+DeskView can switch the keyboard and mouse between the computers by itself - no separate engine running:
+
+- push the pointer off the edge that faces the other computer and it continues there, with the keyboard; it comes back the same way (about 40 ms round trip on a LAN)
+- the clipboard (text, up to the size set on *Switching & input*) follows the pointer, both ways
+- everything is encrypted and authenticated with the pairing code; Ctrl+Alt+0 always brings the pointer home, and so does a dropped link
+- the laptop keeps its pointer visible (Windows hides it when no mouse is plugged in)
+
+Turn it on with **Switching & input > Keyboard & mouse engine > DeskView built-in** in the app, or **Keyboard & mouse: DeskView built-in** in the tray menu - on both computers. The classic engine stays the default until the built-in one has more field testing; turning DeskView off hands switching back to the classic engine.
+
+Not yet in the built-in engine: windows that run as administrator and the Windows sign-in / UAC screens on the other computer (they need an elevated helper), and copying images or files through the clipboard (use drag and drop for files).
+
 ## The DeskView app (preview)
 
 `gui/` holds **DeskView.exe**, a native Windows app with a guided setup assistant and pages for everything:

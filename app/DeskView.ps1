@@ -49,6 +49,8 @@ $S = [pscustomobject]@{
     Screens = @{}            # server: local monitor name -> the client's screen number shown on it
     Profile = 'Auto'; VideoPort = 9000; ControlPort = 9002
     Interactive = $true; Picture = 'Fit'; Encoder = ''; Debug = $false
+    InputEngine = 'Classic'  # Classic = the separate keyboard/mouse engine; DeskView = DeskView's own switching + clipboard
+    Side = 'right'           # where the client sits, seen from the server (left/right/top/bottom)
 }
 if (Test-Path $settingsFile) {
     try { (Get-Content $settingsFile -Raw | ConvertFrom-Json).psobject.Properties | ? { $S.psobject.Properties[$_.Name] } | % { $S.($_.Name) = $_.Value } } catch {}
@@ -103,6 +105,11 @@ function Get-Role {
     if (Get-NetTCPConnection -LocalPort 24800 -State Listen -ErrorAction SilentlyContinue) { 'Server' } else { 'Client' }
 }
 function Get-Peer {
+    # DeskView's own engine: the client's control link to our agent tells us who it is.
+    if ($S.InputEngine -eq 'DeskView' -and $role -eq 'Server' -and $agent -and $agent.Client) {
+        $ip = $agent.Client -replace '^::ffff:', ''
+        if ($S.Peer -ne $ip) { $S.Peer = $ip; Save-Settings }
+    }
     $c = if ($role -eq 'Server') { Get-NetTCPConnection -LocalPort 24800 -State Established -ErrorAction SilentlyContinue }
          else { Get-NetTCPConnection -RemotePort 24800 -State Established -ErrorAction SilentlyContinue }
     $c = $c | Select -First 1
@@ -495,6 +502,16 @@ function Get-ExitSides($pr, $others) {
 # Tell the engine about every picture: "x,y,w,h,SIDES[@client screen rect]" separated by ';'.
 function Update-Portals {
     $pls = @($script:players.Values | Sort-Object { $_.Screen.Bounds.X })
+    if ($S.InputEngine -eq 'DeskView') {
+        # DeskView's own engine: work directly on the first live picture through the control link.
+        $pl = $pls | ? { $_.RemoteRes } | Select -First 1
+        if (-not $S.Interactive -or -not $pl) { $forwarder.Active = $false; return }
+        $pr = Get-PictureRect $pl
+        $forwarder.VidL = $pr.L; $forwarder.VidT = $pr.T; $forwarder.VidW = $pr.W; $forwarder.VidH = $pr.H
+        if ($forwarder.Monitor -ne [string]$pl.RemoteN) { $forwarder.SelectMonitor([string]$pl.RemoteN) }
+        $forwarder.Active = $true
+        return
+    }
     if (-not $S.Interactive -or $pls.Count -eq 0) {
         if ($nativePortal) { Set-NativePortal '' } else { $portal.Enabled = $false; Set-EngineLinks $false $true }
         return
@@ -619,10 +636,51 @@ function On-Hotkey($vk) {
     Show-On ([string]($vk - 0x30))
 }
 
+# ============================================================================================================
+# KEYBOARD & MOUSE ENGINE - the classic separate engine, or DeskView's own switching and clipboard
+# ============================================================================================================
+function Send-EngineDaemon([string[]]$lines) {
+    try {
+        $pipe = New-Object IO.Pipes.NamedPipeClientStream('.', "$engineGui-daemon", [IO.Pipes.PipeDirection]::InOut)
+        $pipe.Connect(2000)
+        $w = New-Object IO.StreamWriter($pipe); $w.NewLine = "`n"; $w.AutoFlush = $true
+        $ver = (Get-Item (Join-Path $engineDir "$engineGui-daemon.exe")).VersionInfo.ProductVersion
+        $w.WriteLine("hello=$ver"); Start-Sleep -Milliseconds 200
+        foreach ($l in $lines) { $w.WriteLine($l); Start-Sleep -Milliseconds 300 }
+        $pipe.Dispose(); $true
+    } catch { $false }
+}
+function Apply-Builtin {
+    $on = $S.InputEngine -eq 'DeskView'
+    $side = ([string]$S.Side).ToLowerInvariant()
+    $forwarder.Edge = if (-not $on) { '' } elseif ($role -eq 'Server') { $side } else { [DvEdge]::Opposite($side) }
+    if (-not $on) { $forwarder.TakeBack() }
+    $forwarder.ShareClipboard = $on; $agent.ShareClipboard = $on
+    $agent.AvoidLeftEdge = $agent.AvoidRightEdge = ($role -eq 'Server' -and -not $on)
+    if ($on -and $S.Peer) { $forwarder.Peer = $S.Peer }
+}
+function Set-InputEngine([string]$which) {
+    $S.InputEngine = $which; Save-Settings
+    $cfg = "configFile=$($engineIni -replace '\\', '/')"
+    if ($which -eq 'DeskView') {
+        if ($role -eq 'Server' -and $nativePortal) { Set-NativePortal '' }
+        [void](Send-EngineDaemon @($cfg, 'stop'))
+        Notify "DeskView's own keyboard/mouse switching is on (encrypted). Choose the same on $remoteName." 'Info' 5000
+    } else {
+        $forwarder.Active = $false
+        [void](Send-EngineDaemon @($cfg, 'start'))
+        Notify 'Classic keyboard/mouse engine is back on.'
+    }
+    Apply-Builtin; Update-Portals; Build-Menu
+}
+
 function Exit-DeskView {
     try { if ($role -eq 'Server') { if ($nativePortal) { Set-NativePortal '' } else { Restore-EngineLayout } } } catch {}
     foreach ($z in @($script:dropZones.Values)) { $z.Close() }
+    $forwarder.TakeBack()
     $portal.Stop(); $forwarder.Stop(); $agent.Stop(); Stop-Players; Stop-Senders
+    # Leaving with DeskView's own engine on: hand switching back to the classic engine, so the mouse keeps working.
+    if ($S.InputEngine -eq 'DeskView') { [void](Send-EngineDaemon @("configFile=$($engineIni -replace '\\', '/')", 'start')) }
     $tray.Visible = $false; [System.Windows.Forms.Application]::Exit()
 }
 
@@ -695,6 +753,10 @@ function Build-Menu {
         $q.DropDownItems.Add($it) | Out-Null
     }
     $menu.Items.Add($q) | Out-Null
+    $eng = New-Object System.Windows.Forms.ToolStripMenuItem 'Keyboard && mouse: DeskView built-in (new)'
+    $eng.Checked = ($S.InputEngine -eq 'DeskView')
+    $eng.add_Click({ Set-InputEngine $(if ($S.InputEngine -eq 'DeskView') { 'Classic' } else { 'DeskView' }) })
+    $menu.Items.Add($eng) | Out-Null
     $menu.Items.Add('Reconnect', $null, { Stop-Senders; Stop-Players; Sync-Players }) | Out-Null
     $menu.Items.Add('-') | Out-Null
     $st = $menu.Items.Add("Control channel: $(if ($agent.Client) { 'in use by ' + $agent.Client } elseif ($forwarder.Connected) { 'connected' } else { 'ready' })"); $st.Enabled = $false
@@ -789,7 +851,7 @@ $timer.add_Tick({
                 Stop-Senders; Stop-Players; Sync-Players; Build-Menu
                 Notify 'Monitor layout changed - adjusted.'
             }
-            $before = $S.Peer; [void](Get-Peer); if ($S.Peer -ne $before) { if ($role -eq 'Client') { $forwarder.Peer = $S.Peer }; Build-Menu }
+            $before = $S.Peer; [void](Get-Peer); if ($S.Peer -ne $before) { if ($role -eq 'Client' -or $S.InputEngine -eq 'DeskView') { $forwarder.Peer = $S.Peer }; Build-Menu }
         }
     } catch {
         if ($S.Debug) { Add-Content (Join-Path $env:TEMP 'deskview-errors.log') "$(Get-Date -Format s) $($_.Exception.Message) @ $($_.InvocationInfo.ScriptLineNumber)" }
@@ -803,7 +865,10 @@ $tray.add_DoubleClick({
 
 # --- start ------------------------------------------------------------------------------------------------
 [void](Get-Peer)
-if ($role -eq 'Client') { $forwarder.Peer = $S.Peer }   # the server only uses the hook for its hotkeys
+if ($role -eq 'Client') { $forwarder.Peer = $S.Peer }   # the server only uses the hook for its hotkeys (classic engine)
+Apply-Builtin
+# Never two engines switching at once: with DeskView's own engine the classic one stays stopped.
+if ($S.InputEngine -eq 'DeskView') { [void](Send-EngineDaemon @("configFile=$($engineIni -replace '\\', '/')", 'stop')) }
 $forwarder.Start()                       # hotkeys on both roles; input forwarding on the client while viewing
 if ($role -eq 'Server' -and -not $nativePortal) { $portal.Start() }
 if ($role -eq 'Client' -and $S.Monitor -ne 'Off') { $S.Monitor = 'Off'; Save-Settings }   # start on this machine's own screen
