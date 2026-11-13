@@ -1,26 +1,17 @@
 # DeskView installer - downloads the latest DeskView from GitHub and runs its setup.
-# (Line comments on purpose: this file is run through "irm | iex", where a block comment can break.)
+# Every line is a complete statement on purpose: "irm | iex" can feed this file to PowerShell line by line.
 #
-# Install (PowerShell, on each machine):
-#     irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
-#
-# With the pairing code (on the Deskflow client), or to uninstall:
-#     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -PairCode ABCD2345
-#     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -Uninstall
-param(
-    [string]$PairCode,
-    [switch]$Uninstall,
-    [string]$Repo = 'xl337x/DeskView',
-    [string]$Branch = 'main'
-)
-$ErrorActionPreference = 'Stop'
+#   Install (each machine):            irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
+#   With the pairing code (client):    $PairCode='ABCD2345'; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
+#   Uninstall:                         $DeskViewUninstall=1; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
+if (-not $DeskViewRepo) { $DeskViewRepo = 'xl337x/DeskView' }
+if (-not $DeskViewBranch) { $DeskViewBranch = 'main' }
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-$base = "https://raw.githubusercontent.com/$Repo/$Branch/app"
-$setup = Join-Path $env:TEMP 'DeskView-Setup.ps1'
-Write-Host "Downloading DeskView setup from github.com/$Repo ($Branch)..."
-Invoke-WebRequest "$base/DeskView-Setup.ps1" -OutFile $setup -UseBasicParsing
-
-$a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $setup, '-Source', $base)
-if ($PairCode) { $a += @('-PairCode', $PairCode) }
-if ($Uninstall) { $a += '-Uninstall' }
-& powershell @a
+$dvBase = "https://raw.githubusercontent.com/$DeskViewRepo/$DeskViewBranch/app"
+$dvSetup = Join-Path $env:TEMP 'DeskView-Setup.ps1'
+Write-Host "Downloading DeskView setup from github.com/$DeskViewRepo ($DeskViewBranch)..."
+Invoke-WebRequest "$dvBase/DeskView-Setup.ps1" -OutFile $dvSetup -UseBasicParsing -ErrorAction Stop
+$dvArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $dvSetup, '-Source', $dvBase)
+if ($PairCode) { $dvArgs += @('-PairCode', $PairCode) }
+if ($DeskViewUninstall) { $dvArgs += '-Uninstall' }
+& powershell @dvArgs

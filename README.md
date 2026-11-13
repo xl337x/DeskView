@@ -25,7 +25,7 @@ irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
   On the **client** it asks for that code. To pass it directly:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -PairCode ABCD2345
+$PairCode='ABCD2345'; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 ```
 
 ## Use
@@ -75,7 +75,7 @@ The live tests move your mouse by themselves for a minute or two.
 ## Uninstall
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -Uninstall
+$DeskViewUninstall=1; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 ```
 
 Removes DeskView, its startup entry, settings and firewall rules. Deskflow and FFmpeg stay.
