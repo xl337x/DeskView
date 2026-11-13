@@ -16,6 +16,7 @@ param(
     [string]$PairCode,
     [switch]$Uninstall,
     [ValidateSet('', 'Server', 'Client')] [string]$Role = '',   # only needed if Deskflow was never set up on this machine
+    [ValidateRange(-1, 4)] [int]$VirtualScreens = -1,              # add N virtual screens (0 removes them; -1 leaves them as they are)
     [switch]$Elevated,            # internal: the part that needs administrator rights
     [switch]$RemoveRules          # internal: elevated part of uninstall
 )
@@ -24,15 +25,43 @@ $files = 'DeskView.ps1', 'DeskView-Portal.cs', 'DeskView-Input.cs', 'DeskView-Dx
 $installDir = Join-Path $env:LOCALAPPDATA 'DeskView'
 $settingsDir = Join-Path $env:APPDATA 'DeskView'
 $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'DeskView.lnk'
-$videoPort = 9000; $controlPort = 9002
+$videoPorts = '9000-9009'; $controlPort = 9002      # one video port per screen (screen n = 9000+n-1)
 $defaultSource = 'https://raw.githubusercontent.com/xl337x/DeskView/main/app'
+
+# ---- virtual screens (Virtual Display Driver, github.com/VirtualDrivers/Virtual-Display-Driver) -------------
+# Extra screens for this machine that Windows treats as real monitors: DeskView streams them like any other
+# screen, so the other machine can show each on one of its monitors and windows can be dragged between them.
+function Set-VirtualScreens([int]$count) {
+    $cfgDir = 'C:\VirtualDisplayDriver'; $cfg = Join-Path $cfgDir 'vdd_settings.xml'
+    $device = { Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { $_.FriendlyName -match 'Virtual Display' -or $_.HardwareID -match 'MttVDD' } }
+    if ($count -gt 0 -and -not (& $device)) {
+        Write-Host "Installing the virtual display driver ($count screen$(if ($count -gt 1) { 's' }))..."
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Write-Host 'winget is needed for the virtual display driver.'; return $false }
+        winget install --id VirtualDrivers.Virtual-Display-Driver -e --source winget --accept-source-agreements --accept-package-agreements --silent | Out-Host
+    }
+    $dev = & $device
+    if ($count -gt 0 -and -not $dev) { Write-Host 'The virtual display driver did not install.'; return $false }
+    if (-not $dev) { return $true }
+    if (Test-Path $cfg) {
+        [xml]$x = Get-Content $cfg
+        if ($count -eq 0) { $dev | Disable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue; Write-Host 'Virtual screens off.'; return $true }
+        $x.vdd_settings.monitors.count = [string]$count
+        $x.Save($cfg)
+    }
+    # Reload the driver so it creates the new number of screens.
+    $dev | Disable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue
+    Start-Sleep 2
+    $dev | Enable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host "Virtual screens: $count. Arrange them in Settings > System > Display (e.g. to the right of the laptop screen)."
+    $true
+}
 
 # ---- elevated parts ------------------------------------------------------------------------------------
 if ($RemoveRules) { Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; exit 0 }
 if ($Elevated) {
-    Write-Host 'Firewall: allowing DeskView video (UDP 9000) and control (TCP 9002) from the local network...'
+    Write-Host 'Firewall: allowing DeskView video (UDP 9000-9009) and control (TCP 9002) from the local network...'
     Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-    New-NetFirewallRule -DisplayName 'DeskView video (UDP 9000)' -Direction Inbound -Protocol UDP -LocalPort $videoPort -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
+    New-NetFirewallRule -DisplayName 'DeskView video (UDP 9000-9009)' -Direction Inbound -Protocol UDP -LocalPort $videoPorts -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
     New-NetFirewallRule -DisplayName 'DeskView control (TCP 9002)' -Direction Inbound -Protocol TCP -LocalPort $controlPort -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null
     $failed = 0
     if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) {
@@ -54,6 +83,7 @@ if ($Elevated) {
         }
         if (-not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')) { Write-Host 'Deskflow is NOT installed.'; $failed++ }
     }
+    if ($VirtualScreens -ge 0) { if (-not (Set-VirtualScreens $VirtualScreens)) { $failed++ } }
     exit $failed
 }
 
@@ -105,11 +135,12 @@ Write-Host '== DeskView setup ==' -ForegroundColor Cyan
 if (-not $Source) { $Source = if (Test-Path (Join-Path $PSScriptRoot 'DeskView.ps1')) { $PSScriptRoot } else { $defaultSource } }
 
 # 1. Administrator part - only when something is actually missing (firewall rules, Deskflow).
-$rules = @(Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue).Count
-$needAdmin = $rules -lt 2 -or -not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe')
+$rules = @(Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | % DisplayName)
+$needAdmin = ($rules -notcontains 'DeskView video (UDP 9000-9009)') -or ($rules -notcontains 'DeskView control (TCP 9002)') -or
+             -not (Test-Path 'C:\Program Files\Deskflow\deskflow.exe') -or $VirtualScreens -ge 0
 if ($needAdmin) {
     Write-Host 'Step 1/4: administrator approval for firewall rules / Deskflow (a Windows prompt will appear)...'
-    if (-not (Run-Elevated 'Elevated')) { Write-Warning 'The administrator part did not fully succeed (see above) - check Deskflow is installed and the firewall allows DeskView.' }
+    if (-not (Run-Elevated "Elevated -VirtualScreens $VirtualScreens")) { Write-Warning 'The administrator part did not fully succeed (see above) - check Deskflow is installed and the firewall allows DeskView.' }
 } else { Write-Host 'Step 1/4: firewall rules and Deskflow already in place.' }
 
 # 2. Copy the program.

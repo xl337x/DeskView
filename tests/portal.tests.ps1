@@ -90,7 +90,10 @@ function Test-Monitor($scr) {
     }
 }
 
-$current = (Settings).Monitor
+# the monitor showing the client's screen 1 (multi-screen settings), else the old single-monitor setting
+$st = Settings
+$current = if ($st.Screens) { @($st.Screens.psobject.Properties | ? { [int]$_.Value -eq 1 } | % Name) | Select -First 1 } else { $null }
+if (-not $current) { $current = $st.Monitor }
 if ($All) {
     $n = 0
     foreach ($scr in $screens) {

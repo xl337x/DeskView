@@ -2,18 +2,22 @@
   DeskView - see and control the other machine's screens, in both directions, on top of Deskflow.
   The same program runs on both machines; the role comes from Deskflow (server or client).
 
+  Every machine streams ALL of its screens (screen n = the n-th monitor from the left, on UDP port 9000+n-1).
+
   On the Deskflow SERVER (the machine with the keyboard/mouse Deskflow shares):
-    - Shows the client's screen on any local monitor. Moving the mouse onto that monitor hands keyboard and
-      mouse to the client at the same spot (the "portal"); leaving its edge brings you back beside it.
-    - Ctrl+Alt+1..9  show the client on local monitor 1..9 (left to right)   Ctrl+Alt+0  off   Ctrl+Alt+D  cycle
+    - Any local monitor can show any screen of the client (tray: "Monitors"). Moving the mouse onto a monitor
+      showing the client hands keyboard and mouse to the client at that spot (the "portal"); the cursor then
+      moves across all of the client's screens like a normal multi-monitor desktop, so windows can be
+      dragged between them. Leaving the client's edge brings you back beside the picture.
+    - Ctrl+Alt+1..9  show the client's screen 1 on local monitor 1..9   Ctrl+Alt+0  all off   Ctrl+Alt+D  cycle
   On the Deskflow CLIENT:
     - Ctrl+Alt+1..9  view the server's monitor 1..9 full screen and control it with this machine's own
       keyboard/touchpad (Deskflow can't do this direction).   Ctrl+Alt+0  back to this machine   Ctrl+Alt+D  cycle
-  Both machines stream their own screen on request and accept control only from a paired machine
-  (pairing code, local network only).
+  Streams are encrypted and control is accepted only from the paired machine (pairing code, local network).
 
   Run:   powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File DeskView.ps1
   Move:  powershell -ExecutionPolicy Bypass -File DeskView.ps1 -Show 2     (or DISPLAY2, or Off) - tells the running copy
+         -Show 2=1   (server) monitor 2 shows the client's screen 1; "2=0" gives monitor 2 its own desktop back
 #>
 param([string]$Show)
 $ErrorActionPreference = 'Stop'
@@ -38,13 +42,16 @@ if (-not $mutex.WaitOne(0)) {
 
 $S = [pscustomobject]@{
     Role = 'Auto'; PairCode = ''; Peer = ''; RemoteName = ''
-    Monitor = 'Off'          # server: local monitor showing the client.  client: server monitor being viewed (1..9) or Off
+    Monitor = 'Off'          # client: server monitor being viewed (1..9) or Off.  (server: old single-screen setting)
+    Screens = @{}            # server: local monitor name -> the client's screen number shown on it
     Profile = 'Auto'; VideoPort = 9000; ControlPort = 9002
     Interactive = $true; Picture = 'Fit'; Encoder = ''; Debug = $false
 }
 if (Test-Path $settingsFile) {
     try { (Get-Content $settingsFile -Raw | ConvertFrom-Json).psobject.Properties | ? { $S.psobject.Properties[$_.Name] } | % { $S.($_.Name) = $_.Value } } catch {}
 }
+# JSON gives Screens back as an object: make it a hashtable again.
+if ($S.Screens -isnot [hashtable]) { $h = @{}; if ($S.Screens) { $S.Screens.psobject.Properties | % { $h[$_.Name] = [int]$_.Value } }; $S.Screens = $h }
 function Save-Settings { $S | ConvertTo-Json | Set-Content $settingsFile -Encoding UTF8 }
 
 # --- helpers ----------------------------------------------------------------------------------------------
@@ -125,7 +132,7 @@ function New-PairCode {
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose()
     -join ($bytes | % { $alphabet[$_ % $alphabet.Length] })
 }
-# The video stream is encrypted (SRT AES-256) with a key only the paired machines know.
+# The video streams are encrypted (SRT AES-256) with a key only the paired machines know.
 function Get-VideoKey {
     $sha = [Security.Cryptography.SHA256]::Create()
     $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("DeskView-video-v2:" + $S.PairCode.Trim().ToUpper())); $sha.Dispose()
@@ -142,6 +149,10 @@ if (-not $S.PairCode) {
     if ($role -eq 'Server') { $S.PairCode = New-PairCode }
     Save-Settings
 }
+# Before multi-screen support the server had one setting: the monitor showing the client's (only) screen.
+if ($role -eq 'Server' -and $S.Screens.Count -eq 0 -and $S.Monitor -ne 'Off' -and $S.Monitor -notmatch '^\d+$') {
+    $S.Screens[$S.Monitor] = 1; $S.Monitor = 'Off'; Save-Settings
+}
 
 $ffmpeg = Find-Tool 'ffmpeg'
 $ffplay = Find-Tool 'ffplay'
@@ -157,10 +168,8 @@ function Notify($text, $kind = 'Info', $ms = 2000) { $tray.ShowBalloonTip($ms, '
 function Set-TrayText($t) { $t = "DeskView: $t"; $tray.Text = $t.Substring(0, [math]::Min(63, $t.Length)) }
 
 # ============================================================================================================
-# HOST - stream a local monitor and accept control (both roles)
+# HOST - stream every local monitor (one encrypted listener each) and accept control (both roles)
 # ============================================================================================================
-$script:sender = $null; $script:senderMonitor = $null; $script:senderFails = 0; $script:senderRetryAt = $null
-
 function Test-Encoder($enc) {
     $p = Start-Process $ffmpeg -ArgumentList "-hide_banner -loglevel error -f lavfi -i color=s=640x360:r=30 -frames:v 3 -pix_fmt nv12 -c:v $enc -f null -" `
          -WindowStyle Hidden -PassThru
@@ -175,17 +184,21 @@ function Get-Encoder {
     $S.Encoder
 }
 
-# Which local monitor the host shares: the one the viewer asked for, else the main monitor.
-$script:shareMonitor = Short ([System.Windows.Forms.Screen]::PrimaryScreen.DeviceName)
+$script:senders = @{}       # screen number -> sender state   (never name a variable $s: it IS $S, the settings)
+$script:senderCpuPath = $false
 
-function Stop-Sender { if ($script:sender -and -not $script:sender.HasExited) { try { $script:sender.Kill() } catch {} }; $script:sender = $null }
-function Start-Sender {
-    Stop-Sender
-    if (-not $ffmpeg) { return }
+# Screen n = n-th monitor from the left; its capture index (DXGI output) and position.
+function Get-SharedScreens {
     $outputs = @([DeskViewDxgi]::DdagrabOutputs())
-    if ($outputs.Count -eq 0) { return }
-    $idx = [array]::IndexOf($outputs, $script:shareMonitor)
-    if ($idx -lt 0) { $idx = 0; $script:shareMonitor = $outputs[0] }
+    $n = 0
+    foreach ($m in Get-OrderedMonitors) {
+        $n++
+        $idx = [array]::IndexOf($outputs, (Short $m.DeviceName))
+        if ($idx -ge 0) { [pscustomobject]@{ N = $n; Name = Short $m.DeviceName; Idx = $idx; Rect = $m.Bounds } }
+    }
+}
+function Stop-Senders { foreach ($snd in @($script:senders.Values)) { if ($snd.P -and -not $snd.P.HasExited) { try { $snd.P.Kill() } catch {} } }; $script:senders = @{} }
+function Start-SenderFor($sc, $state) {
     $prof = Get-Profile; $enc = Get-Encoder
     $b = "$($bitrateMbps[$prof])M"; $buf = "$([int]($bitrateMbps[$prof] * 500))k"; $gop = 120
     $encArgs = switch ($enc) {
@@ -195,25 +208,47 @@ function Start-Sender {
         'h264_mf'    { "-c:v h264_mf -hw_encoding 1 -scenario display_remoting -rate_control cbr -b:v $b -g $gop -bf 0" }
         default      { "-c:v libx264 -preset ultrafast -tune zerolatency -b:v $b -maxrate $b -bufsize $buf -g $gop -bf 0" }
     }
-    $url = "srt://0.0.0.0:$($S.VideoPort)?mode=listener&latency=$($latencyMs[$prof] * 1000)&pkt_size=1316&transtype=live&passphrase=$(Get-VideoKey)&pbkeylen=32"
+    $port = $S.VideoPort + $sc.N - 1
+    $url = "srt://0.0.0.0:${port}?mode=listener&latency=$($latencyMs[$prof] * 1000)&pkt_size=1316&transtype=live&passphrase=$(Get-VideoKey)&pbkeylen=32"
     # Keep captured frames on the GPU when the encoder can take them (about 3x less CPU than copying
     # every frame back for colour conversion); fall back to the CPU path if the GPU path keeps failing.
-    $cap = "ddagrab=output_idx=${idx}:framerate=60:draw_mouse=1"
+    $cap = "ddagrab=output_idx=$($sc.Idx):framerate=60:draw_mouse=1"
     $gpu = -not $script:senderCpuPath
     $chain = if ($gpu -and $enc -eq 'h264_qsv') { "$cap,hwmap=derive_device=qsv,format=qsv"; $pix = '' }
              elseif ($gpu -and $enc -in 'h264_nvenc', 'h264_amf') { $cap; $pix = '' }
              else { "$cap,hwdownload,format=bgra"; $pix = '-pix_fmt nv12' }
-    $script:senderGpu = $chain -notmatch 'hwdownload'
-    $a = "-hide_banner -loglevel error -f lavfi -i $chain $pix $encArgs -flush_packets 1 -f mpegts -mpegts_flags resend_headers `"$url`""
+    $state.Gpu = $chain -notmatch 'hwdownload'
+    # The stream says which screen it is and where it sits on this desktop, so the viewer can map the
+    # portal onto exactly that screen.
+    $r = $sc.Rect
+    $meta = "DeskView|$($sc.N)|$($r.X),$($r.Y),$($r.Width),$($r.Height)"
+    $a = "-hide_banner -loglevel error -f lavfi -i $chain $pix $encArgs -metadata service_name=$meta " +
+         "-flush_packets 1 -f mpegts -mpegts_flags resend_headers `"$url`""
     $psi = New-Object System.Diagnostics.ProcessStartInfo $ffmpeg, $a
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
-    $script:sender = [System.Diagnostics.Process]::Start($psi)
-    [DeskViewPortal]::KillWithMe($script:sender)
-    $script:senderStarted = Get-Date
-    $script:senderMonitor = $script:shareMonitor
-    # Tell the agent which rectangle the viewer's coordinates refer to.
-    $m = Get-Monitor $script:shareMonitor
-    if ($m) { $agent.TL = $m.Bounds.Left; $agent.TT = $m.Bounds.Top; $agent.TW = $m.Bounds.Width; $agent.TH = $m.Bounds.Height }
+    $state.P = [System.Diagnostics.Process]::Start($psi)
+    [DeskViewPortal]::KillWithMe($state.P)
+    $state.Started = Get-Date
+    $state.Name = $sc.Name
+}
+# Keep one listener per screen alive. A listener exits after each viewing session (restart at once); if it
+# keeps dying within a few seconds (port taken, locked screen, encoder trouble) wait longer each time.
+function Service-Senders {
+    if (-not $ffmpeg) { return }
+    $screens = @(Get-SharedScreens)
+    foreach ($n in @($script:senders.Keys)) {
+        if (-not ($screens | ? { $_.N -eq $n })) { $snd = $script:senders[$n]; if ($snd.P -and -not $snd.P.HasExited) { try { $snd.P.Kill() } catch {} }; $script:senders.Remove($n) }
+    }
+    foreach ($sc in $screens) {
+        $snd = $script:senders[$sc.N]
+        if (-not $snd) { $snd = [pscustomobject]@{ P = $null; Started = $null; Fails = 0; RetryAt = $null; Gpu = $false; Name = '' }; $script:senders[$sc.N] = $snd }
+        if ($snd.P -and -not $snd.P.HasExited) { continue }
+        if ($snd.P -and $snd.Started -and ((Get-Date) - $snd.Started).TotalSeconds -lt 3) { $snd.Fails++ } elseif ($snd.P) { $snd.Fails = 0 }
+        if ($snd.Fails -ge 2 -and $snd.Gpu) { $script:senderCpuPath = $true; $snd.Fails = 0 }   # GPU path unsupported here
+        $snd.P = $null
+        if (-not $snd.RetryAt) { $snd.RetryAt = (Get-Date).AddSeconds($(if ($snd.Fails) { [math]::Min(30, 0.5 * [math]::Pow(2, $snd.Fails)) } else { 0 })) }
+        if ((Get-Date) -ge $snd.RetryAt) { $snd.RetryAt = $null; Start-SenderFor $sc $snd }
+    }
 }
 
 $agent = New-Object DeskViewAgent
@@ -224,69 +259,88 @@ $agent.VL = ($all | % { $_.Bounds.Left } | Measure -Minimum).Minimum
 $agent.VR = ($all | % { $_.Bounds.Right } | Measure -Maximum).Maximum
 # On the server, Deskflow links outer edges to the client: control from the client must not trip them.
 $agent.AvoidLeftEdge = ($role -eq 'Server'); $agent.AvoidRightEdge = ($role -eq 'Server')
+# Which local monitor the viewer's coordinates refer to (the screen it is watching).
+function Set-AgentScreen([string]$want) {
+    $name = Resolve-Monitor $want
+    $m = if ($name -and $name -ne 'Off') { Get-Monitor $name } else { [System.Windows.Forms.Screen]::PrimaryScreen }
+    $agent.TL = $m.Bounds.Left; $agent.TT = $m.Bounds.Top; $agent.TW = $m.Bounds.Width; $agent.TH = $m.Bounds.Height
+}
+Set-AgentScreen '1'
 try { $agent.Start() } catch { Notify "Control port $($S.ControlPort) is in use - remote control from the other machine is off." 'Warning' 4000 }
 
 # ============================================================================================================
-# VIEWER - shared player (portal monitor on the server, full screen on the client)
+# VIEWER - players (server: one per monitor showing a client screen; client: one full-screen view)
 # ============================================================================================================
-$script:player = $null; $script:remoteRes = $null; $script:playerPassive = $false; $script:playerFails = 0; $script:playerLegacy = $false
-$reportFile = Join-Path $env:TEMP 'deskview-ffplay.log'
+$script:players = @{}       # key (local monitor name, or 'view' on the client) -> player state
 
-function Stop-Player { if ($script:player -and -not $script:player.HasExited) { try { $script:player.Kill() } catch {} }; $script:player = $null }
-function Start-Player($screen) {
-    Stop-Player
+function New-Player([string]$key, $screen, [int]$remoteN) {
+    [pscustomobject]@{
+        Key = $key; Screen = $screen; RemoteN = $remoteN; P = $null
+        Report = Join-Path $env:TEMP ("deskview-ffplay-$($key -replace '[^\w]', '').log")
+        RemoteRes = $null; RemoteRect = $null; Passive = $false; Fails = 0; Legacy = $false
+        Started = $null; LastStart = (Get-Date '2000-01-01'); ReportLen = -1; ReportGrew = (Get-Date)
+    }
+}
+function Stop-Player($pl) { if ($pl.P -and -not $pl.P.HasExited) { try { $pl.P.Kill() } catch {} }; $pl.P = $null }
+function Stop-Players { foreach ($pl in @($script:players.Values)) { Stop-Player $pl }; $script:players = @{} }
+function Start-Player($pl) {
+    Stop-Player $pl
     if (-not $ffplay) { Notify 'ffplay not found - run DeskView-Setup.ps1.' 'Error' 4000; return }
     $addr = Get-Peer
-    if (-not $addr) { Notify 'The other machine is not connected through Deskflow yet.' 'Warning' 3000; return }
+    if (-not $addr) { return }
     $prof = Get-Profile
-    $r = $screen.Bounds
-    # A machine still on an old DeskView streams without encryption: after two failed encrypted attempts,
-    # try the old way every other time (this only affects what we receive; our own stream stays encrypted).
-    $script:playerLegacy = $script:playerFails -ge 2 -and ($script:playerFails % 2) -eq 1
-    $enc = if ($script:playerLegacy) { '' } else { "&passphrase=$(Get-VideoKey)&pbkeylen=32" }
-    $url = "srt://$(Format-Host $addr):$($S.VideoPort)?mode=caller&latency=$($latencyMs[$prof] * 1000)&transtype=live&connect_timeout=3000$enc"
+    $r = $pl.Screen.Bounds
+    $port = $S.VideoPort + $pl.RemoteN - 1
+    # A machine still on an old DeskView streams one screen without encryption: after two failed encrypted
+    # attempts, try the old way every other time (this only affects what we receive).
+    $pl.Legacy = $pl.Fails -ge 2 -and ($pl.Fails % 2) -eq 1
+    $enc = if ($pl.Legacy) { '' } else { "&passphrase=$(Get-VideoKey)&pbkeylen=32" }
+    $url = "srt://$(Format-Host $addr):${port}?mode=caller&latency=$($latencyMs[$prof] * 1000)&transtype=live&connect_timeout=3000$enc"
     # Fit keeps the remote shape (bars if it differs from the monitor); Stretch fills the monitor.
     $vf = if ($S.Picture -eq 'Stretch') { "-vf scale=$($r.Width):$($r.Height) " } else { '' }
-    $hw = if ($script:playerFails -lt 4) { '-hwaccel d3d11va ' } else { '' }   # GPU decode: ~3.5x less CPU
+    $hw = if ($pl.Fails -lt 4) { '-hwaccel d3d11va ' } else { '' }   # GPU decode: ~3.5x less CPU
     $a = "-hide_banner -loglevel error $hw-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext " +
          "-probesize 32768 -analyzeduration 0 -an -noborder -alwaysontop $vf" +
          "-left $($r.X) -top $($r.Y) -x $($r.Width) -y $($r.Height) -window_title DeskView `"$url`""
     $psi = New-Object System.Diagnostics.ProcessStartInfo $ffplay, $a
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $psi.EnvironmentVariables['SDL_WINDOWS_DPI_AWARENESS'] = 'permonitorv2'   # 1:1 pixels on scaled monitors
-    try { [IO.File]::Delete($reportFile) } catch {}
-    # ffplay's report tells us the remote resolution as soon as the stream opens.
-    $psi.EnvironmentVariables['FFREPORT'] = 'file=' + (($reportFile -replace '\\', '/') -replace ':', '\:') + ':level=32'
-    $script:player = [System.Diagnostics.Process]::Start($psi)
-    [DeskViewPortal]::KillWithMe($script:player)
-    $script:playerStarted = Get-Date
-    $script:reportLen = -1; $script:reportGrew = Get-Date
-    $script:playerPassive = $false
-    $script:remoteRes = $null
-    $script:playerScreen = $screen
+    try { [IO.File]::Delete($pl.Report) } catch {}
+    # ffplay's report tells us the remote resolution and which screen it is as soon as the stream opens.
+    $psi.EnvironmentVariables['FFREPORT'] = 'file=' + (($pl.Report -replace '\\', '/') -replace ':', '\:') + ':level=32'
+    $pl.P = [System.Diagnostics.Process]::Start($psi)
+    [DeskViewPortal]::KillWithMe($pl.P)
+    $pl.Started = Get-Date; $pl.LastStart = Get-Date
+    $pl.ReportLen = -1; $pl.ReportGrew = Get-Date
+    $pl.Passive = $false; $pl.RemoteRes = $null
 }
 
-function Read-RemoteResolution {
-    if (-not [IO.File]::Exists($reportFile)) { return $null }
-    try { $fs = New-Object IO.FileStream($reportFile, 'Open', 'Read', 'ReadWrite'); $text = (New-Object IO.StreamReader($fs)).ReadToEnd(); $fs.Close() } catch { return $null }
+# Resolution and (newer senders) which screen it is + where it sits on the remote desktop.
+function Read-StreamInfo($pl) {
+    if (-not [IO.File]::Exists($pl.Report)) { return $null }
+    try { $fs = New-Object IO.FileStream($pl.Report, 'Open', 'Read', 'ReadWrite'); $text = (New-Object IO.StreamReader($fs)).ReadToEnd(); $fs.Close() } catch { return $null }
     $m = [regex]::Match($text, 'Video: [^\r\n]*?, (\d{2,5})x(\d{2,5})[ ,\[]')
-    if ($m.Success) { [pscustomobject]@{ W = [int]$m.Groups[1].Value; H = [int]$m.Groups[2].Value } } else { $null }
+    if (-not $m.Success) { return $null }
+    $info = [pscustomobject]@{ W = [int]$m.Groups[1].Value; H = [int]$m.Groups[2].Value; Rect = $null }
+    $r = [regex]::Match($text, 'DeskView\|\d+\|(-?\d+),(-?\d+),(\d+),(\d+)')
+    if ($r.Success) { $info.Rect = "$($r.Groups[1].Value),$($r.Groups[2].Value),$($r.Groups[3].Value),$($r.Groups[4].Value)" }
+    $info
 }
 
 # Where the picture sits on its monitor (Fit adds bars when shapes differ).
-function Get-PictureRect($screen) {
-    $b = $screen.Bounds
-    if (-not $script:remoteRes -or $S.Picture -eq 'Stretch') { return [pscustomobject]@{ L = $b.Left; T = $b.Top; W = $b.Width; H = $b.Height } }
+function Get-PictureRect($pl) {
+    $b = $pl.Screen.Bounds
+    if (-not $pl.RemoteRes -or $S.Picture -eq 'Stretch') { return [pscustomobject]@{ L = $b.Left; T = $b.Top; W = $b.Width; H = $b.Height } }
     # [double]: 1920/1920 is an int and would make [math]::Min pick its int overload (0.9 -> 1).
-    $scale = [math]::Min([double]$b.Width / $script:remoteRes.W, [double]$b.Height / $script:remoteRes.H)
-    $w = [int][math]::Round($script:remoteRes.W * $scale); $h = [int][math]::Round($script:remoteRes.H * $scale)
+    $scale = [math]::Min([double]$b.Width / $pl.RemoteRes.W, [double]$b.Height / $pl.RemoteRes.H)
+    $w = [int][math]::Round($pl.RemoteRes.W * $scale); $h = [int][math]::Round($pl.RemoteRes.H * $scale)
     [pscustomobject]@{ L = $b.Left + [int](($b.Width - $w) / 2); T = $b.Top + [int](($b.Height - $h) / 2); W = $w; H = $h }
 }
 
 # ============================================================================================================
-# SERVER VIEWER - the portal
+# SERVER - portals
 # ============================================================================================================
-$portal = New-Object DeskViewPortal
+$portal = New-Object DeskViewPortal          # fallback (hook) portal for a standard Deskflow: one monitor only
 $portal.LocalName = $localName
 $portal.RemoteName = $remoteName
 if ($S.Debug) { $portal.DebugLog = Join-Path $env:TEMP 'deskview-portal.log' }
@@ -348,14 +402,14 @@ function Set-DeskflowLinks([bool]$leftToRemote, [bool]$rightToRemote) {
     Start-Process 'C:\Program Files\Deskflow\deskflow.exe' -WindowStyle Minimized
     $script:reinstallAt = (Get-Date).AddSeconds(4)
 }
-# Deskflow built with DeskView (github.com/xl337x/deskflow, branch deskview) handles the portal itself:
-# we only tell it where the picture is (computer_<name>/portal in its settings) - no mouse hook, no edge links.
+# Deskflow built with DeskView (github.com/xl337x/deskflow, branch deskview) handles portals itself: we only
+# tell it where each picture is and which client screen it shows (computer_<name>/portal in its settings).
 $nativePortal = Test-Path 'C:\Program Files\Deskflow\deskview.txt'
 function Set-NativePortal([string]$value) {
     $ini = Read-DeskflowIni
     if (-not $ini) { return }
     $section = "[computer_$remoteName]"
-    # portalPid lets Deskflow ignore a portal left behind if DeskView dies without cleaning up.
+    # portalPid lets Deskflow ignore portals left behind if DeskView dies without cleaning up.
     $line = if ($value) { "portal=`"$value`"`r`nportalPid=$PID" } else { '' }
     $i = $ini.IndexOf($section, [StringComparison]::OrdinalIgnoreCase)
     if ($i -lt 0) { if (-not $value) { return }; $ini = $ini.TrimEnd() + "`r`n`r`n$section`r`nname=$remoteName`r`n$line`r`n" }
@@ -363,17 +417,23 @@ function Set-NativePortal([string]$value) {
         $start = $i + $section.Length
         $next = $ini.IndexOf("`n[", $start); if ($next -lt 0) { $next = $ini.Length }
         $body = $ini.Substring($start, $next - $start)
+        $old = [regex]::Match($body, '(?m)^portal="?([^"\r\n]*)"?').Groups[1].Value
+        if ($old -eq $value -and ($value -eq '' -or $body -match "(?m)^portalPid=$PID\b")) { return }   # unchanged
         $body = [regex]::Replace($body, '(?m)^portal(Pid)?=.*\r?\n?', '')
         if ($line) { $body = $body.TrimEnd("`r", "`n") + "`r`n$line`r`n" }
         $ini = $ini.Substring(0, $start) + $body + $ini.Substring($next)
     }
     Write-FileAtomic $deskflowIni $ini
 }
-# Sides of the picture the cursor may leave by: only where everything just outside that side is on a
-# monitor (otherwise leaving would land in a gap between monitors and bounce back in).
-function Get-ExitSides($pr) {
+# Sides of a picture the cursor may leave by: only where everything just outside that side is on a monitor
+# and not inside another picture (otherwise leaving would land in a gap, or straight back in the client).
+function Get-ExitSides($pr, $others) {
     $mons = @([System.Windows.Forms.Screen]::AllScreens | % { $_.Bounds })
-    function OnMonitor($x, $y) { foreach ($m in $mons) { if ($x -ge $m.Left -and $x -lt $m.Right -and $y -ge $m.Top -and $y -lt $m.Bottom) { return $true } }; $false }
+    function OnMonitor($x, $y) {
+        foreach ($o in $others) { if ($x -ge $o.L -and $x -lt $o.L + $o.W -and $y -ge $o.T -and $y -lt $o.T + $o.H) { return $false } }
+        foreach ($m in $mons) { if ($x -ge $m.Left -and $x -lt $m.Right -and $y -ge $m.Top -and $y -lt $m.Bottom) { return $true } }
+        $false
+    }
     function Covered($points) { foreach ($p in $points) { if (-not (OnMonitor $p[0] $p[1])) { return $false } }; $true }
     $ys = @(0..20 | % { $pr.T + [int](($pr.H - 1) * $_ / 20) }); $xs = @(0..20 | % { $pr.L + [int](($pr.W - 1) * $_ / 20) })
     $sides = ''
@@ -383,26 +443,30 @@ function Get-ExitSides($pr) {
     if (Covered ($xs | % { , @($_, ($pr.T + $pr.H)) })) { $sides += 'B' }
     if (-not $sides) { 'LRTB' } else { $sides }          # nothing outside fits: let Deskflow's own bounds decide
 }
-function Update-PortalVideo {
-    if (-not $script:playerScreen) { return }
-    $pr = Get-PictureRect $script:playerScreen
-    if ($nativePortal) { if ($S.Monitor -ne 'Off' -and $S.Interactive) { Set-NativePortal "$($pr.L),$($pr.T),$($pr.W),$($pr.H),$(Get-ExitSides $pr)" }; return }
-    $portal.VidT = $pr.T; $portal.VidH = $pr.H
-    $portal.RemoteH = if ($script:remoteRes) { $script:remoteRes.H } else { 0 }
-}
-function Update-Portal {
-    $scr = if ($S.Monitor -ne 'Off') { Get-Monitor $S.Monitor }
-    if ($nativePortal) {
-        $portal.Enabled = $false
-        # The user's Deskflow layout (edge links) is left exactly as it is: the portal works on top of it.
-        if (-not $scr -or -not $S.Interactive) { Set-NativePortal ''; return }
-        $script:playerScreen = $scr
-        Update-PortalVideo
+# Tell Deskflow about every picture: "x,y,w,h,SIDES[@client screen rect]" separated by ';'.
+function Update-Portals {
+    $pls = @($script:players.Values | Sort-Object { $_.Screen.Bounds.X })
+    if (-not $S.Interactive -or $pls.Count -eq 0) {
+        if ($nativePortal) { Set-NativePortal '' } else { $portal.Enabled = $false; Set-DeskflowLinks $false $true }
         return
     }
-    if (-not $scr -or -not $S.Interactive) { $portal.Enabled = $false; Set-DeskflowLinks $false $true; return }
+    if ($nativePortal) {
+        $portal.Enabled = $false
+        $rects = @($pls | % { Get-PictureRect $_ })
+        $entries = for ($i = 0; $i -lt $pls.Count; $i++) {
+            $pr = $rects[$i]; $others = @($rects | ? { $_ -ne $pr })
+            $e = "$($pr.L),$($pr.T),$($pr.W),$($pr.H),$(Get-ExitSides $pr $others)"
+            if ($pls[$i].RemoteRect) { $e += "@$($pls[$i].RemoteRect)" }
+            $e
+        }
+        # The user's Deskflow layout (edge links) is left exactly as it is: portals work on top of it.
+        Set-NativePortal ($entries -join ';')
+        return
+    }
+    # Standard Deskflow: the hook portal handles the first picture only (the others are view-only).
+    $pl = $pls[0]
     $all = [System.Windows.Forms.Screen]::AllScreens
-    $b = $scr.Bounds
+    $b = $pl.Screen.Bounds
     $portal.PL = $b.Left; $portal.PT = $b.Top; $portal.PR = $b.Right; $portal.PB = $b.Bottom
     $portal.VL = ($all | % { $_.Bounds.Left }   | Measure -Minimum).Minimum
     $portal.VR = ($all | % { $_.Bounds.Right }  | Measure -Maximum).Maximum
@@ -410,60 +474,96 @@ function Update-Portal {
     $portal.VB = ($all | % { $_.Bounds.Bottom } | Measure -Maximum).Maximum
     # Entering from the left uses Deskflow's right-edge link, entering from the right its left-edge link.
     Set-DeskflowLinks ($portal.PR -lt $portal.VR) ($portal.PL -gt $portal.VL)
-    $script:playerScreen = $scr
-    Update-PortalVideo
+    $pr = Get-PictureRect $pl
+    $portal.VidT = $pr.T; $portal.VidH = $pr.H
+    $portal.RemoteH = if ($pl.RemoteRes) { $pl.RemoteRes.H } else { 0 }
     $portal.Enabled = $true
     $portal.Reinstall()
 }
 
 # ============================================================================================================
-# CLIENT VIEWER - full screen view + control of the server's monitors
+# CLIENT - full screen view + control of the server's monitors
 # ============================================================================================================
 $forwarder = New-Object DeskViewForwarder
 $forwarder.Port = $S.ControlPort
 $forwarder.Code = $S.PairCode
 
 function Update-ForwarderPicture {
-    if (-not $script:playerScreen) { return }
-    $pr = Get-PictureRect $script:playerScreen
+    $pl = $script:players['view']
+    if (-not $pl) { return }
+    $pr = Get-PictureRect $pl
     $forwarder.VidL = $pr.L; $forwarder.VidT = $pr.T; $forwarder.VidW = $pr.W; $forwarder.VidH = $pr.H
 }
 
 # ============================================================================================================
 # ACTIONS
 # ============================================================================================================
-function Apply-Monitor {
+# Which players should exist right now.
+function Get-WantedPlayers {
     if ($role -eq 'Server') {
-        Update-Portal
-        if ($S.Monitor -ne 'Off') { Start-Player (Get-Monitor $S.Monitor) } else { Stop-Player }
-    } else {
-        if ($S.Monitor -eq 'Off') { $forwarder.Active = $false; Stop-Player; return }
+        foreach ($k in @($S.Screens.Keys)) { $m = Get-Monitor $k; if ($m) { [pscustomobject]@{ Key = $k; Screen = $m; N = [int]$S.Screens[$k] } } }
+    } elseif ($S.Monitor -ne 'Off') {
+        [pscustomobject]@{ Key = 'view'; Screen = [System.Windows.Forms.Screen]::PrimaryScreen; N = [int]$S.Monitor }
+    }
+}
+# Bring the players in line with the settings (start new ones, stop removed or changed ones).
+function Sync-Players {
+    $wanted = @(Get-WantedPlayers)
+    foreach ($k in @($script:players.Keys)) {
+        $w = $wanted | ? { $_.Key -eq $k }
+        if (-not $w -or $w.N -ne $script:players[$k].RemoteN -or $w.Screen.Bounds -ne $script:players[$k].Screen.Bounds) { Stop-Player $script:players[$k]; $script:players.Remove($k) }
+    }
+    foreach ($w in $wanted) { if (-not $script:players[$w.Key]) { $pl = New-Player $w.Key $w.Screen $w.N; $script:players[$w.Key] = $pl; Start-Player $pl } }
+    if ($role -eq 'Server') { Update-Portals }
+    else {
+        if ($S.Monitor -eq 'Off') { $forwarder.Active = $false; return }
         $forwarder.Peer = Get-Peer
-        $forwarder.SelectMonitor($S.Monitor)           # the server streams its monitor N
-        Start-Player ([System.Windows.Forms.Screen]::PrimaryScreen)
+        $forwarder.SelectMonitor([string]$S.Monitor)   # the server maps our coordinates onto its monitor N
         Update-ForwarderPicture
         $forwarder.Active = $true
     }
 }
 
+# Server: show the client's screen $n on local monitor $want (0 = nothing there).
+function Set-ScreenOn([string]$want, [int]$n) {
+    $name = Resolve-Monitor $want
+    if (-not $name -or $name -eq 'Off') { Notify "There is no monitor $want." 'Warning'; return }
+    # A stream serves one viewer, so a screen is shown on one monitor at a time: showing it here moves it.
+    if ($n -gt 0) { foreach ($k in @($S.Screens.Keys)) { if ($S.Screens[$k] -eq $n) { $S.Screens.Remove($k) } } }
+    if ($n -le 0) { $S.Screens.Remove($name) } else { $S.Screens[$name] = $n }
+    Save-Settings; Sync-Players; Build-Menu
+}
+
 function Show-On([string]$want) {
+    # "2=1" / "DISPLAY2=1": local monitor 2 shows the client's screen 1 ("2=0": its own desktop again).
+    if ($role -eq 'Server' -and $want -match '^(\w+)=(\d)$') { Set-ScreenOn $Matches[1] ([int]$Matches[2]); return }
     if ($role -eq 'Server') {
+        if (-not $want -or $want -eq 'Off') { $S.Screens = @{}; Save-Settings; Sync-Players; Build-Menu; Notify "$remoteName screens off"; return }
         $name = Resolve-Monitor $want
         if (-not $name) { Notify "There is no monitor $want." 'Warning'; return }
+        # Hotkeys / -Show move the client's screen 1; screens placed from the menu stay where they are.
+        foreach ($k in @($S.Screens.Keys)) { if ($S.Screens[$k] -eq 1) { $S.Screens.Remove($k) } }
+        $S.Screens[$name] = 1; $script:lastOn = $name
+        Save-Settings; Sync-Players; Build-Menu
+        Notify "$remoteName shown on $name"
     } else {
         $name = if (-not $want -or $want -eq 'Off') { 'Off' } elseif ($want -match '^\d$') { $want } else { Notify "Use a monitor number (1-9) or Off." 'Warning'; return }
+        if ($name -ne $S.Monitor) { $S.Monitor = $name; Save-Settings; Sync-Players; Build-Menu }
+        if ($name -ne 'Off') { $script:lastOn = $name }
+        Notify $(if ($name -eq 'Off') { 'Back to this machine' } else { "Viewing the other machine's monitor $name - Ctrl+Alt+0 to return" })
     }
-    if ($name -ne $S.Monitor) { $S.Monitor = $name; Save-Settings; Apply-Monitor; Build-Menu }
-    if ($role -eq 'Server') { Notify $(if ($name -eq 'Off') { "$remoteName screen off" } else { "$remoteName shown on $name" }) }
-    else { Notify $(if ($name -eq 'Off') { 'Back to this machine' } else { "Viewing the other machine's monitor $name - Ctrl+Alt+0 to return" }) }
 }
 
 function On-Hotkey($vk) {
     if ($vk -eq 0x30) { Show-On 'Off'; return }
     if ($vk -eq 0x44) {
-        $names = if ($role -eq 'Server') { @(Get-OrderedMonitors | % { Short $_.DeviceName }) } else { @('1', '2', '3') }
-        $names += 'Off'
-        $i = [array]::IndexOf($names, [string]$S.Monitor)
+        if ($role -eq 'Server') {
+            $names = @(Get-OrderedMonitors | % { Short $_.DeviceName }) + 'Off'
+            $cur = @($S.Screens.Keys | ? { $S.Screens[$_] -eq 1 }) | Select -First 1
+            $i = if ($cur) { [array]::IndexOf($names, $cur) } else { $names.Count - 1 }
+        } else {
+            $names = @('1', '2', '3', 'Off'); $i = [array]::IndexOf($names, [string]$S.Monitor)
+        }
         Show-On $names[($i + 1) % $names.Count]; return
     }
     Show-On ([string]($vk - 0x30))
@@ -471,7 +571,7 @@ function On-Hotkey($vk) {
 
 function Exit-DeskView {
     try { if ($role -eq 'Server') { if ($nativePortal) { Set-NativePortal '' } else { Restore-DeskflowLayout } } } catch {}
-    $portal.Stop(); $forwarder.Stop(); $agent.Stop(); Stop-Player; Stop-Sender
+    $portal.Stop(); $forwarder.Stop(); $agent.Stop(); Stop-Players; Stop-Senders
     $tray.Visible = $false; [System.Windows.Forms.Application]::Exit()
 }
 
@@ -480,25 +580,38 @@ function Exit-DeskView {
 # ============================================================================================================
 function Build-Menu {
     $menu.Items.Clear()
-    $res = if ($script:remoteRes) { "  $($script:remoteRes.W)x$($script:remoteRes.H)" } else { '' }
     $peer = if ($S.Peer) { $S.Peer } else { 'not connected' }
-    $hdr = $menu.Items.Add("$localName ($role)  <->  $remoteName $peer$res"); $hdr.Enabled = $false
+    $hdr = $menu.Items.Add("$localName ($role)  <->  $remoteName $peer"); $hdr.Enabled = $false
     if ($role -eq 'Server') { $pc = $menu.Items.Add("Pairing code: $($S.PairCode)"); $pc.Enabled = $false }
     $menu.Items.Add('-') | Out-Null
 
     if ($role -eq 'Server') {
-        $show = New-Object System.Windows.Forms.ToolStripMenuItem "Show $remoteName on"
+        # One entry per local monitor: which of the client's screens it shows.
+        $mons = New-Object System.Windows.Forms.ToolStripMenuItem 'Monitors'
         $num = 0
         foreach ($scr in Get-OrderedMonitors) {
             $num++; $n = Short $scr.DeviceName
-            $it = New-Object System.Windows.Forms.ToolStripMenuItem "$num. $n  ($($scr.Bounds.Width)x$($scr.Bounds.Height)$(if ($scr.Primary) { ', main' }))   Ctrl+Alt+$num"
-            $it.Checked = ($S.Monitor -eq $n); $it.Tag = $n
-            $it.add_Click({ param($src, $evt) Show-On $src.Tag })
-            $show.DropDownItems.Add($it) | Out-Null
+            $cur = if ($S.Screens.ContainsKey($n)) { [int]$S.Screens[$n] } else { 0 }
+            $pl = $script:players[$n]
+            $state = if ($cur) { "$remoteName screen $cur$(if ($pl -and $pl.RemoteRes) { " ($($pl.RemoteRes.W)x$($pl.RemoteRes.H))" })" } else { 'its own desktop' }
+            $it = New-Object System.Windows.Forms.ToolStripMenuItem "$num. $n$(if ($scr.Primary) { ' (main)' }) - $state"
+            foreach ($k in 0..4) {
+                $sub = New-Object System.Windows.Forms.ToolStripMenuItem $(if ($k -eq 0) { 'Its own desktop' } else { "$remoteName screen $k" })
+                $sub.Checked = ($cur -eq $k); $sub.Tag = "$n|$k"
+                $sub.add_Click({ param($src, $evt) $p = $src.Tag.Split('|'); Set-ScreenOn $p[0] ([int]$p[1]) })
+                $it.DropDownItems.Add($sub) | Out-Null
+            }
+            $mons.DropDownItems.Add($it) | Out-Null
         }
+        $mons.DropDownItems.Add('-') | Out-Null
+        $allOff = New-Object System.Windows.Forms.ToolStripMenuItem 'All off   Ctrl+Alt+0'
+        $allOff.add_Click({ Show-On 'Off' })
+        $mons.DropDownItems.Add($allOff) | Out-Null
+        $menu.Items.Add($mons) | Out-Null
         $ia = New-Object System.Windows.Forms.ToolStripMenuItem 'Interactive (mouse goes into it)'
         $ia.Checked = [bool]$S.Interactive
-        $ia.add_Click({ $S.Interactive = -not $S.Interactive; Save-Settings; Update-Portal; Build-Menu })
+        $ia.add_Click({ $S.Interactive = -not $S.Interactive; Save-Settings; Update-Portals; Build-Menu })
+        $menu.Items.Add($ia) | Out-Null
     } else {
         $show = New-Object System.Windows.Forms.ToolStripMenuItem 'View + control the other machine'
         foreach ($n in 1..3) {
@@ -507,20 +620,18 @@ function Build-Menu {
             $it.add_Click({ param($src, $evt) Show-On $src.Tag })
             $show.DropDownItems.Add($it) | Out-Null
         }
-        $ia = $null
+        $show.DropDownItems.Add('-') | Out-Null
+        $off = New-Object System.Windows.Forms.ToolStripMenuItem 'Off   Ctrl+Alt+0'
+        $off.Checked = ($S.Monitor -eq 'Off'); $off.add_Click({ Show-On 'Off' })
+        $show.DropDownItems.Add($off) | Out-Null
+        $menu.Items.Add($show) | Out-Null
     }
-    $show.DropDownItems.Add('-') | Out-Null
-    $off = New-Object System.Windows.Forms.ToolStripMenuItem 'Off   Ctrl+Alt+0'
-    $off.Checked = ($S.Monitor -eq 'Off'); $off.add_Click({ Show-On 'Off' })
-    $show.DropDownItems.Add($off) | Out-Null
-    $menu.Items.Add($show) | Out-Null
-    if ($ia) { $menu.Items.Add($ia) | Out-Null }
 
     $pic = New-Object System.Windows.Forms.ToolStripMenuItem 'Picture'
     foreach ($p in @(@('Fit', 'Fit - keep shape'), @('Stretch', 'Stretch - fill the monitor'))) {
         $it = New-Object System.Windows.Forms.ToolStripMenuItem $p[1]
         $it.Checked = ($S.Picture -eq $p[0]); $it.Tag = $p[0]
-        $it.add_Click({ param($src, $evt) $S.Picture = $src.Tag; Save-Settings; Apply-Monitor; Build-Menu })
+        $it.add_Click({ param($src, $evt) $S.Picture = $src.Tag; Save-Settings; Stop-Players; Sync-Players; Build-Menu })
         $pic.DropDownItems.Add($it) | Out-Null
     }
     $menu.Items.Add($pic) | Out-Null
@@ -529,21 +640,58 @@ function Build-Menu {
     foreach ($p in @(@('Auto', 'Auto (detect)'), @('Wired', 'Wired - 20 Mbps, lowest lag'), @('WiFi', 'Wi-Fi - 10 Mbps, stutter-resistant'))) {
         $it = New-Object System.Windows.Forms.ToolStripMenuItem $p[1]
         $it.Checked = ($S.Profile -eq $p[0]); $it.Tag = $p[0]
-        $it.add_Click({ param($src, $evt) $S.Profile = $src.Tag; Save-Settings; Start-Sender; Apply-Monitor; Build-Menu })
+        $it.add_Click({ param($src, $evt) $S.Profile = $src.Tag; Save-Settings; Stop-Senders; Stop-Players; Sync-Players; Build-Menu })
         $q.DropDownItems.Add($it) | Out-Null
     }
     $menu.Items.Add($q) | Out-Null
-    $menu.Items.Add('Reconnect', $null, { Start-Sender; Apply-Monitor }) | Out-Null
+    $menu.Items.Add('Reconnect', $null, { Stop-Senders; Stop-Players; Sync-Players }) | Out-Null
     $menu.Items.Add('-') | Out-Null
     $st = $menu.Items.Add("Control channel: $(if ($agent.Client) { 'in use by ' + $agent.Client } elseif ($forwarder.Connected) { 'connected' } else { 'ready' })"); $st.Enabled = $false
-    $menu.Items.Add('Exit', $null, {
-        Exit-DeskView
-    }) | Out-Null
+    $menu.Items.Add('Exit', $null, { Exit-DeskView }) | Out-Null
 }
 
 # ============================================================================================================
 # HEARTBEAT (4x a second)
 # ============================================================================================================
+function Service-Players {
+    $changed = $false
+    foreach ($pl in @($script:players.Values)) {
+        if (-not $pl.P -or $pl.P.HasExited) {
+            if ($pl.P -and -not $pl.RemoteRes) { $pl.Fails++ }
+            $pl.P = $null
+            if (((Get-Date) - $pl.LastStart).TotalSeconds -ge 2) { Start-Player $pl }
+            continue
+        }
+        if (-not $pl.Passive) {
+            $pl.P.Refresh()
+            # Keep the video window out of Alt+Tab and from taking focus (a stray Esc would close ffplay).
+            if ($pl.P.MainWindowHandle -ne [IntPtr]::Zero) { [DeskViewPortal]::MakePassive($pl.P.MainWindowHandle); $pl.Passive = $true }
+        }
+        $len = if ([IO.File]::Exists($pl.Report)) { (New-Object IO.FileInfo $pl.Report).Length } else { 0 }
+        if ($len -ne $pl.ReportLen) { $pl.ReportLen = $len; $pl.ReportGrew = Get-Date }
+        elseif ($pl.RemoteRes -and ((Get-Date) - $pl.ReportGrew).TotalSeconds -gt 6) {
+            # The picture froze (the stream died but ffplay keeps the last frame): reconnect.
+            $pl.ReportGrew = Get-Date; Stop-Player $pl; continue
+        }
+        $info = Read-StreamInfo $pl
+        if ($info -and (-not $pl.RemoteRes -or $info.W -ne $pl.RemoteRes.W -or $info.H -ne $pl.RemoteRes.H -or $info.Rect -ne $pl.RemoteRect)) {
+            $pl.RemoteRes = [pscustomobject]@{ W = $info.W; H = $info.H }; $pl.RemoteRect = $info.Rect
+            $pl.Fails = 0
+            if ($pl.Legacy -and -not $script:warnedLegacy) {
+                $script:warnedLegacy = $true
+                Notify "$remoteName runs an old DeskView: its picture is not encrypted. Update it with the install command." 'Warning' 6000
+            }
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        if ($role -eq 'Server') { Update-Portals } else { Update-ForwarderPicture }
+        $shown = @($script:players.Values | ? { $_.RemoteRes } | % { "$($_.Key)<-$($_.RemoteN)" }) -join ' '
+        Set-TrayText "$remoteName $shown"
+        Build-Menu
+    }
+}
+
 $script:layoutSig = Get-LayoutSignature
 $script:lastSlow = Get-Date
 $timer = New-Object System.Windows.Forms.Timer
@@ -560,54 +708,13 @@ $timer.add_Tick({
             if ($cmd) { Show-On $cmd }
         }
 
-        # Host: the viewer asked for another monitor, or the stream ended (listener exits after each session).
+        # Host: the viewer switched to another of our screens (its input now refers to that monitor).
         $req = $agent.TakeRequestedMonitor()
-        if ($req) {
-            $name = Resolve-Monitor $req
-            if ($name -and $name -ne 'Off' -and $name -ne $script:senderMonitor) { $script:shareMonitor = $name; Start-Sender }
-        }
-        if (-not $script:sender -or $script:sender.HasExited) {
-            # The listener exits after each viewing session (restart at once); if it keeps dying within a few
-            # seconds (port taken, locked screen, encoder trouble) wait longer each time, up to 30 s.
-            if ($script:sender -and $script:senderStarted -and ((Get-Date) - $script:senderStarted).TotalSeconds -lt 3) { $script:senderFails++ } elseif ($script:sender) { $script:senderFails = 0 }
-            if ($script:senderFails -ge 2 -and $script:senderGpu) { $script:senderCpuPath = $true; $script:senderFails = 0 }   # GPU path unsupported here
-            $wait = if ($script:senderFails) { [math]::Min(30, 0.5 * [math]::Pow(2, $script:senderFails)) } else { 0 }
-            if (-not $script:senderRetryAt) { $script:senderRetryAt = (Get-Date).AddSeconds($wait) }
-            if ((Get-Date) -ge $script:senderRetryAt) { $script:senderRetryAt = $null; Start-Sender }
-        }
+        if ($req) { Set-AgentScreen $req }
+        Service-Senders
 
         if ($script:reinstallAt -and (Get-Date) -ge $script:reinstallAt) { $script:reinstallAt = $null; $portal.Reinstall() }
-
-        if ($S.Monitor -ne 'Off') {
-            if (-not $script:player -or $script:player.HasExited) {
-                if ($script:player -and -not $script:remoteRes) { $script:playerFails++ }
-                if (((Get-Date) - $script:lastPlayerStart).TotalSeconds -ge 2) { $script:lastPlayerStart = Get-Date; Apply-Monitor }
-            } else {
-                if (-not $script:playerPassive) {
-                    $script:player.Refresh()
-                    # Keep the video window out of Alt+Tab and from taking focus (a stray Esc would close ffplay).
-                    if ($script:player.MainWindowHandle -ne [IntPtr]::Zero) { [DeskViewPortal]::MakePassive($script:player.MainWindowHandle); $script:playerPassive = $true }
-                }
-                $len = if ([IO.File]::Exists($reportFile)) { (New-Object IO.FileInfo $reportFile).Length } else { 0 }
-                if ($len -ne $script:reportLen) { $script:reportLen = $len; $script:reportGrew = Get-Date }
-                elseif ($script:remoteRes -and ((Get-Date) - $script:reportGrew).TotalSeconds -gt 6) {
-                    # The picture froze (the stream died but ffplay keeps the last frame): reconnect.
-                    $script:reportGrew = Get-Date; Stop-Player
-                }
-                $res = Read-RemoteResolution
-                if ($res -and (-not $script:remoteRes -or $res.W -ne $script:remoteRes.W -or $res.H -ne $script:remoteRes.H)) {
-                    $script:remoteRes = $res
-                    $script:playerFails = 0
-                    if ($script:playerLegacy -and -not $script:warnedLegacy) {
-                        $script:warnedLegacy = $true
-                        Notify "$remoteName runs an old DeskView: its picture is not encrypted. Update it with the install command." 'Warning' 6000
-                    }
-                    if ($role -eq 'Server') { Update-PortalVideo } else { Update-ForwarderPicture }
-                    Set-TrayText "$remoteName $($res.W)x$($res.H) on $(if ($role -eq 'Server') { $S.Monitor } else { 'this screen' })"
-                    Build-Menu
-                }
-            }
-        }
+        Service-Players
 
         if (((Get-Date) - $script:lastSlow).TotalSeconds -ge 2) {
             $script:lastSlow = Get-Date
@@ -615,11 +722,10 @@ $timer.add_Tick({
             $sig = Get-LayoutSignature
             if ($sig -ne $script:layoutSig) {
                 $script:layoutSig = $sig
-                if ($role -eq 'Server' -and $S.Monitor -ne 'Off' -and -not (Get-Monitor $S.Monitor)) { $S.Monitor = 'Off'; Save-Settings }
                 $all = [System.Windows.Forms.Screen]::AllScreens
                 $agent.VL = ($all | % { $_.Bounds.Left } | Measure -Minimum).Minimum
                 $agent.VR = ($all | % { $_.Bounds.Right } | Measure -Maximum).Maximum
-                Start-Sender; Apply-Monitor; Build-Menu
+                Stop-Senders; Stop-Players; Sync-Players; Build-Menu
                 Notify 'Monitor layout changed - adjusted.'
             }
             $before = $S.Peer; [void](Get-Peer); if ($S.Peer -ne $before) { if ($role -eq 'Client') { $forwarder.Peer = $S.Peer }; Build-Menu }
@@ -628,19 +734,21 @@ $timer.add_Tick({
         if ($S.Debug) { Add-Content (Join-Path $env:TEMP 'deskview-errors.log') "$(Get-Date -Format s) $($_.Exception.Message) @ $($_.InvocationInfo.ScriptLineNumber)" }
     }
 })
-$script:lastPlayerStart = Get-Date '2000-01-01'
 
-$tray.add_DoubleClick({ if ($S.Monitor -eq 'Off') { Show-On $(if ($script:lastOn) { $script:lastOn } else { '1' }) } else { Show-On 'Off' } })
+$tray.add_DoubleClick({
+    $on = if ($role -eq 'Server') { $S.Screens.Count -gt 0 } else { $S.Monitor -ne 'Off' }
+    if ($on) { Show-On 'Off' } else { Show-On $(if ($script:lastOn) { $script:lastOn } else { '1' }) }
+})
 
 # --- start ------------------------------------------------------------------------------------------------
-if ($Show) { $want = if ($role -eq 'Server') { Resolve-Monitor $Show } else { $Show }; if ($want) { $S.Monitor = $want; Save-Settings } }
 [void](Get-Peer)
 if ($role -eq 'Client') { $forwarder.Peer = $S.Peer }   # the server only uses the hook for its hotkeys
 $forwarder.Start()                       # hotkeys on both roles; input forwarding on the client while viewing
 if ($role -eq 'Server' -and -not $nativePortal) { $portal.Start() }
-Start-Sender
 if ($role -eq 'Client' -and $S.Monitor -ne 'Off') { $S.Monitor = 'Off'; Save-Settings }   # start on this machine's own screen
-Apply-Monitor
+if ($Show) { Show-On $Show }
+Service-Senders
+Sync-Players
 Build-Menu
 Set-TrayText "$role - $remoteName $($S.Peer)"
 $timer.Start()

@@ -3,6 +3,7 @@
 #
 #   Install (each machine):            irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 #   With the pairing code (client):    $PairCode='ABCD2345'; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
+#   Add virtual screens (laptop): $DeskViewVirtualScreens=2; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 #   Uninstall:                         $DeskViewUninstall=1; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 if (-not $DeskViewRepo) { $DeskViewRepo = 'xl337x/DeskView' }
 if (-not $DeskViewBranch) { $DeskViewBranch = 'main' }
@@ -14,4 +15,5 @@ Invoke-WebRequest "$dvBase/DeskView-Setup.ps1" -OutFile $dvSetup -UseBasicParsin
 $dvArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $dvSetup, '-Source', $dvBase)
 if ($PairCode) { $dvArgs += @('-PairCode', $PairCode) }
 if ($DeskViewUninstall) { $dvArgs += '-Uninstall' }
+if ($null -ne $DeskViewVirtualScreens) { $dvArgs += @('-VirtualScreens', [string]$DeskViewVirtualScreens) }
 & powershell @dvArgs

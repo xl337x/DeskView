@@ -20,7 +20,7 @@ irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 ```
 
 - You'll get **one** administrator prompt (only if something is missing): two firewall rules limited to your
-  local network (UDP 9000 video, TCP 9002 control), and Deskflow if it isn't installed (via `winget`, or straight
+  local network (UDP 9000-9009 video, TCP 9002 control), and Deskflow if it isn't installed (via `winget`, or straight
   from Deskflow's GitHub releases when winget is missing). FFmpeg is downloaded next to DeskView if needed - no admin.
 - If Deskflow was never set up on this machine, setup asks whether it is the server (or pass `-Role Server|Client`).
 - On the Deskflow **server** the installer prints a **pairing code** (also in the tray menu).
@@ -30,12 +30,28 @@ irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 $PairCode='ABCD2345'; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
 ```
 
+## Every monitor can show any screen of the other machine
+
+Each machine streams **all** of its screens (screen 1 = its left-most monitor). On the Deskflow server, the tray
+menu **Monitors** lets every local monitor show any screen of the client - or its own desktop. With the DeskView
+build of Deskflow, the mouse enters the client exactly where you point and moves across all of the client's
+screens like a normal multi-monitor desktop, so windows can be dragged between them.
+
+Give a laptop more screens than it physically has (they appear on your monitors):
+
+```powershell
+$DeskViewVirtualScreens=2; irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
+```
+
+(installs the open-source [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver);
+arrange the new screens in Windows *Settings > System > Display*, e.g. to the right of the laptop screen.)
+
 ## Use
 
 | Where you sit | Keys | What happens |
 |---|---|---|
 | Deskflow server | **Ctrl+Alt+1..9** | The other machine's screen appears on your monitor 1..9 (counted left to right). Move the mouse onto it to work there. |
-| Deskflow server | **Ctrl+Alt+0** | Hide it |
+| Deskflow server | **Ctrl+Alt+0** | Hide all of them |
 | Deskflow client | **Ctrl+Alt+1..9** | The server's monitor 1..9 fills this screen; this machine's keyboard and touchpad control it |
 | Deskflow client | **Ctrl+Alt+0** | Back to this machine |
 | Either | **Ctrl+Alt+D** | Cycle through the monitors |
@@ -48,7 +64,8 @@ The tray icon menu has the same choices plus:
 - **Quality** — *Auto* (detects wired vs Wi-Fi), *Wired* (20 Mbps, lowest lag), *Wi-Fi* (10 Mbps, stutter-resistant).
 - **Interactive** — turn the mouse hand-over on/off (view only).
 
-Command line: `DeskView.ps1 -Show 2` (or `DISPLAY2`, or `Off`) controls the running copy.
+Command line: `DeskView.ps1 -Show 2` (or `DISPLAY2`, or `Off`) controls the running copy; on the server
+`-Show 2=1` puts the client's screen 1 on monitor 2 (`2=0` gives monitor 2 its own desktop back).
 
 ## How it works
 
@@ -113,3 +130,4 @@ Removes DeskView, its startup entry, settings and firewall rules. Deskflow and F
 - A window can't be dragged from one machine's screen onto the other machine's monitor (they are separate
   computers); sending single windows and second virtual screens are on the roadmap.
 - Two machines today (one Deskflow server + one client).
+- One screen is shown on one monitor at a time (each screen is one stream).
