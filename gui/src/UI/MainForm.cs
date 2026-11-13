@@ -325,11 +325,14 @@ namespace DeskView.UI
             scroll.Controls.Add(Theme.Check("Follow the server's keyboard layout", S.LanguageSync, v => S.LanguageSync = v));
             var clip = Theme.Card("Clipboard", "Copy on one computer, paste on the other.");
             clip.Controls.Add(Theme.Check("Share the clipboard", S.ClipboardEnabled, v => S.ClipboardEnabled = v));
+            var ptr = Theme.Card("Mouse pointer", "Windows hides the pointer on a laptop with no mouse plugged in, so the pointer you move from the other computer can be invisible. " +
+                "DeskView keeps it visible by turning on Windows Mouse Keys (Accessibility) - nothing else changes while Num Lock is on.");
+            ptr.Controls.Add(Theme.Check("Always show the mouse pointer on this computer when it is the client", S.AlwaysShowPointer, v => { S.AlwaysShowPointer = v; S.Save(); engine.ApplyPointer(); }));
             clip.Controls.Add(Theme.Row("Largest clipboard to share", Theme.Number(S.ClipboardSizeMb, 1, 1024, v => S.ClipboardSizeMb = v), Theme.Label("MB")));
             var misc = Theme.Card("Connection health and power");
             misc.Controls.Add(Theme.Row("Detect a dead connection", Theme.Check("on", S.HeartbeatEnabled, v => S.HeartbeatEnabled = v), Theme.Number(S.HeartbeatMs, 500, 60000, v => S.HeartbeatMs = v), Theme.Label("ms")));
             misc.Controls.Add(Theme.Check("Keep this computer awake while connected", S.PreventSleep, v => S.PreventSleep = v));
-            foreach (var c in new Control[] { sw, corners, keys, scroll, clip, misc }) page.Controls.Add(c);
+            foreach (var c in new Control[] { sw, corners, keys, scroll, clip, ptr, misc }) page.Controls.Add(c);
             page.Controls.Add(Theme.Button("Save and apply", (o, e) => { S.Save(); engine.ApplyEngine(); Toast("Saved and applied"); }, true));
             return page;
         }

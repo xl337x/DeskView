@@ -106,9 +106,9 @@ Check 'window opens' ($form -ne $null -and $form.Visible)
 $form.Size = New-Object Drawing.Size 1000, 760; Pump 300
 
 $pages = 'Overview', 'What you can do', 'Screens', 'Connection', 'Switching & input', 'Security', 'Logs', 'About'
-$skip = @('Open log folder')   # opens Explorer
+$skip = @('Open log folder', 'Setup assistant...')   # opens Explorer / the assistant (tested on its own above)
 # locked screen: no clipboard, and modal windows can't be answered there
-if (-not $script:clipOk) { $skip += 'Copy', 'Copy command', 'Setup assistant...' }
+if (-not $script:clipOk) { $skip += 'Copy', 'Copy command' }
 foreach ($p in $pages) {
     $form.ShowPage($p); Pump 500; Shot $form ("page-" + ($p -replace '[^\w]', ''))
     $ctrls = @(All-Controls $form)

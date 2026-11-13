@@ -326,3 +326,40 @@ public class DeskViewPortal
         Status = "on " + LocalName;
     }
 }
+
+/// <summary>Windows hides the mouse pointer when it thinks no mouse is plugged in - which is the case on a laptop
+/// whose pointer is moved over the network. Turning on Mouse Keys (Accessibility) makes Windows always draw it;
+/// nothing else changes as long as Num Lock is on.</summary>
+public static class DeskViewPointer
+{
+    [StructLayout(LayoutKind.Sequential)]
+    struct MOUSEKEYS { public uint cbSize, dwFlags, iMaxSpeed, iTimeToMaxSpeed, iCtrlSpeed, dwReserved1, dwReserved2; }
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SystemParametersInfo(uint action, uint param, ref MOUSEKEYS v, uint winIni);
+    const uint SPI_GETMOUSEKEYS = 0x36, SPI_SETMOUSEKEYS = 0x37, MKF_MOUSEKEYSON = 0x1, MKF_AVAILABLE = 0x2, SPIF_UPDATE = 0x1 | 0x2;
+
+    static bool Get(out MOUSEKEYS mk)
+    {
+        mk = new MOUSEKEYS { cbSize = (uint)Marshal.SizeOf(typeof(MOUSEKEYS)) };
+        return SystemParametersInfo(SPI_GETMOUSEKEYS, mk.cbSize, ref mk, 0);
+    }
+
+    public static bool IsForced { get { MOUSEKEYS mk; return Get(out mk) && (mk.dwFlags & MKF_MOUSEKEYSON) != 0; } }
+
+    /// <summary>Makes the pointer always visible. Returns true if it changed something (so it can be undone later).</summary>
+    public static bool ForceVisible()
+    {
+        MOUSEKEYS mk;
+        if (!Get(out mk) || (mk.dwFlags & MKF_MOUSEKEYSON) != 0) return false;
+        mk.dwFlags |= MKF_MOUSEKEYSON | MKF_AVAILABLE;
+        return SystemParametersInfo(SPI_SETMOUSEKEYS, mk.cbSize, ref mk, SPIF_UPDATE);
+    }
+
+    /// <summary>Undoes ForceVisible.</summary>
+    public static bool Release()
+    {
+        MOUSEKEYS mk;
+        if (!Get(out mk) || (mk.dwFlags & MKF_MOUSEKEYSON) == 0) return false;
+        mk.dwFlags &= ~MKF_MOUSEKEYSON;
+        return SystemParametersInfo(SPI_SETMOUSEKEYS, mk.cbSize, ref mk, SPIF_UPDATE);
+    }
+}
