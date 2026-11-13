@@ -45,13 +45,16 @@ namespace DeskView
             window.Activate();
         }
 
-        public void Notify(string text, bool warning) => tray.ShowBalloonTip(warning ? 5000 : 2000, "DeskView", text, warning ? ToolTipIcon.Warning : ToolTipIcon.Info);
+        public void Notify(string text, bool warning)
+        {
+            tray.ShowBalloonTip(warning ? 5000 : 2000, "DeskView", text, warning ? ToolTipIcon.Warning : ToolTipIcon.Info);
+        }
 
         void BuildMenu()
         {
             var m = tray.ContextMenuStrip; m.Items.Clear();
             var S = engine.S;
-            var head = new ToolStripMenuItem($"{S.ComputerName} ({S.Role})  -  {(engine.Connected ? "connected" : "not connected")}") { Enabled = false };
+            var head = new ToolStripMenuItem(string.Format("{0} ({1})  -  {2}", S.ComputerName, S.Role, (engine.Connected ? "connected" : "not connected"))) { Enabled = false };
             m.Items.Add(head);
             m.Items.Add(new ToolStripSeparator());
             m.Items.Add("Open DeskView", null, (o, e) => Open());
@@ -62,7 +65,8 @@ namespace DeskView
                 foreach (var s in Tools.OrderedScreens())
                 {
                     i++; var n = Tools.Short(s); int k = i;
-                    show.DropDownItems.Add(new ToolStripMenuItem($"{i}. {n}   Ctrl+Alt+{i}", null, (o, e) => engine.ShowOn(k.ToString())) { Checked = S.Screens.TryGetValue(n, out var v) && v == 1 });
+                    int v;
+                    show.DropDownItems.Add(new ToolStripMenuItem(string.Format("{0}. {1}   Ctrl+Alt+{0}", i, n), null, (o, e) => engine.ShowOn(k.ToString())) { Checked = S.Screens.TryGetValue(n, out v) && v == 1 });
                 }
                 show.DropDownItems.Add(new ToolStripSeparator());
                 show.DropDownItems.Add("All off   Ctrl+Alt+0", null, (o, e) => engine.ShowOn("off"));
@@ -72,7 +76,7 @@ namespace DeskView
             else if (S.Role == Role.Client)
             {
                 var view = new ToolStripMenuItem("View the server's screen");
-                for (int n = 1; n <= 4; n++) { int k = n; view.DropDownItems.Add(new ToolStripMenuItem($"Screen {n}   Ctrl+Alt+{n}", null, (o, e) => engine.ShowOn(k.ToString())) { Checked = S.ClientView == n }); }
+                for (int n = 1; n <= 4; n++) { int k = n; view.DropDownItems.Add(new ToolStripMenuItem(string.Format("Screen {0}   Ctrl+Alt+{0}", n), null, (o, e) => engine.ShowOn(k.ToString())) { Checked = S.ClientView == n }); }
                 view.DropDownItems.Add(new ToolStripSeparator());
                 view.DropDownItems.Add("Back to this computer   Ctrl+Alt+0", null, (o, e) => engine.ShowOn("off"));
                 m.Items.Add(view);
@@ -110,7 +114,7 @@ namespace DeskView
         public static Icon Get()
         {
             if (icon != null) return icon;
-            try { icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            try { var f = System.IO.Path.Combine(Program.AppDir, "DeskView.ico"); if (System.IO.File.Exists(f)) icon = new Icon(f); } catch { }
             if (icon != null) return icon;
             using (var bmp = new Bitmap(32, 32))
             {

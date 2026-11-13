@@ -1,10 +1,9 @@
-# Tests for the DeskView app's logic (gui/): loads gui\bin\DeskView.exe as a library and checks its building blocks
+﻿# Tests for the DeskView app's logic: compiles and loads app\**\*.cs exactly like DeskView.ps1 does for users, and checks its building blocks
 # without starting the app. Build it first: gui\build.ps1
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Web.Extensions
-$exe = Join-Path $PSScriptRoot '..\gui\bin\DeskView.exe'
-if (-not (Test-Path $exe)) { throw 'Build the app first: gui\build.ps1' }
-$asm = [Reflection.Assembly]::LoadFile((Resolve-Path $exe).Path)
+& (Join-Path $PSScriptRoot '..\app\DeskView.ps1') -LoadOnly
+$asm = [DeskView.Program].Assembly
 $script:pass = 0; $script:fail = 0
 function Check($name, [bool]$ok, $detail = '') { if ($ok) { $script:pass++ } else { $script:fail++ }; "{0}  {1}  {2}" -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $name, $detail }
 $T = { param($n) $asm.GetType($n, $true) }

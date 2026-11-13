@@ -15,7 +15,7 @@ namespace DeskView.UI
     public class MainForm : Form
     {
         readonly Engine engine;
-        AppSettings S => engine.S;
+        AppSettings S { get { return engine.S; } }
         readonly Panel content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Page };
         readonly FlowLayoutPanel nav = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 210, BackColor = Theme.Sidebar, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(0, 16, 0, 0) };
         readonly Dictionary<string, Func<Control>> pages = new Dictionary<string, Func<Control>>();
@@ -47,9 +47,9 @@ namespace DeskView.UI
 
             Controls.Add(content);
             Controls.Add(nav);
-            refresh.Tick += (o, ev) => onRefresh?.Invoke();
+            refresh.Tick += (o, ev) => { var h = onRefresh; if (h != null) h(); };
             refresh.Start();
-            engine.Changed += () => { if (current == "Overview" || current == "Screens") BeginInvokeSafe(() => onRefresh?.Invoke()); };
+            engine.Changed += () => { if (current == "Overview" || current == "Screens") BeginInvokeSafe(() => { var h = onRefresh; if (h != null) h(); }); };
             ShowPage("Overview");
         }
 
@@ -78,7 +78,7 @@ namespace DeskView.UI
             if (!Visible) base.Show();
         }
 
-        string Other => string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName;
+        string Other { get { return string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName; } }
 
         // ================================================================================================ Overview
         Control OverviewPage()
@@ -99,25 +99,25 @@ namespace DeskView.UI
                 status.SuspendLayout();
                 while (status.Controls.Count > 1) status.Controls[1].Dispose();
                 string role = S.Role == Role.Server ? "Server - this computer's keyboard and mouse are shared" : S.Role == Role.Client ? "Client - uses the server's keyboard and mouse" : "Not set up yet";
-                status.Controls.Add(Theme.Row("This computer", Theme.Label($"{S.ComputerName}  ({role})")));
+                status.Controls.Add(Theme.Row("This computer", Theme.Label(string.Format("{0}  ({1})", S.ComputerName, role))));
                 var peer = engine.CurrentPeer();
                 status.Controls.Add(Theme.Row("Other computer", peer != null
-                    ? Theme.Status($"{Other} connected ({peer})", Theme.Good)
-                    : Theme.Status(S.Role == Role.Client ? $"not connected - looking for the server at {S.ServerAddress}" : $"waiting for {Other} to connect", Theme.Warn)));
+                    ? Theme.Status(string.Format("{0} connected ({1})", Other, peer), Theme.Good)
+                    : Theme.Status(S.Role == Role.Client ? string.Format("not connected - looking for the server at {0}", S.ServerAddress) : string.Format("waiting for {0} to connect", Other), Theme.Warn)));
                 status.Controls.Add(Theme.Row("Keyboard & mouse engine", engine.EngineRunning ? Theme.Status("running", Theme.Good) : Theme.Status("stopped", Theme.Bad)));
                 int live = engine.Media.Players.Values.Count(p => p.Live);
-                string shown = string.Join(", ", engine.Media.Players.Values.Select(p => $"{p.Key} <- screen {p.RemoteN}{(p.Live ? $" ({p.RemoteRes.Value.Width}x{p.RemoteRes.Value.Height})" : " (connecting)")}"));
+                string shown = string.Join(", ", engine.Media.Players.Values.Select(p => string.Format("{0} <- screen {1}{2}", p.Key, p.RemoteN, (p.Live ? string.Format(" ({0}x{1})", p.RemoteRes.Value.Width, p.RemoteRes.Value.Height) : " (connecting)"))));
                 status.Controls.Add(Theme.Row("Showing", Theme.Label(shown.Length > 0 ? shown : "nothing (choose on the Screens page)")));
                 int senders = engine.Media.Senders.Values.Count(s => s.P != null && !s.P.HasExited);
-                status.Controls.Add(Theme.Row("Sharing my screens", senders > 0 ? Theme.Status($"{senders} screen(s) ready to be viewed (encrypted)", Theme.Good) : Theme.Status("not yet", Theme.Warn)));
-                string ctl = engine.AgentClient.Length > 0 ? $"{Other} is controlling this computer" : engine.ForwarderConnected ? "connected (encrypted)" : "ready";
+                status.Controls.Add(Theme.Row("Sharing my screens", senders > 0 ? Theme.Status(string.Format("{0} screen(s) ready to be viewed (encrypted)", senders), Theme.Good) : Theme.Status("not yet", Theme.Warn)));
+                string ctl = engine.AgentClient.Length > 0 ? string.Format("{0} is controlling this computer", Other) : engine.ForwarderConnected ? "connected (encrypted)" : "ready";
                 status.Controls.Add(Theme.Row("Remote control channel", Theme.Label(ctl)));
                 status.ResumeLayout();
             };
             onRefresh();
 
             // health checks don't need a live refresh
-            void Check(string what, bool ok, string fix) => checks.Controls.Add(Theme.Status(ok ? what : what + " - " + fix, ok ? Theme.Good : Theme.Bad));
+            Action<string, bool, string> Check = (what, ok, fix) => checks.Controls.Add(Theme.Status(ok ? what : what + " - " + fix, ok ? Theme.Good : Theme.Bad));
             Check("Keyboard & mouse engine installed", CoreControl.Installed, "run the DeskView installer");
             Check("Engine supports portals (DeskView build)", CoreControl.PortalCapable, "install the DeskView build of the engine to work directly on the other computer's picture");
             Check("FFmpeg (video) found", engine.Media.HasFFmpeg, "run the DeskView installer (it downloads FFmpeg)");
@@ -131,37 +131,38 @@ namespace DeskView.UI
         {
             string me = S.Role == Role.Client ? "this laptop" : S.ComputerName, other = Other;
             var page = Theme.PageBody("What you can do", "Step by step: every DeskView feature and exactly how to use it.");
-            Control How(string title, string what, params string[] steps)
-            {
-                var c = Theme.Card(title, what);
-                for (int i = 0; i < steps.Length; i++) c.Controls.Add(Theme.Label($"{i + 1}.  {steps[i]}"));
-                return c;
-            }
             page.Controls.Add(How("Move any window from any laptop to any screen",
-                $"One desktop across both computers: a window that lives on {other} can be dragged onto any monitor that shows {other}, and {me}'s own windows onto any of its own screens.",
-                $"Screens page: click a monitor and pick which of {other}'s screens it shows (each of {other}'s screens can be on a different monitor).",
-                $"Move the mouse onto that monitor - the mouse is now on {other}.",
-                $"Grab the window's title bar (for example a PowerShell tab on {other}) and drag it to another monitor showing {other}: it moves there like on a normal multi-monitor PC.",
-                $"Want more places for {other}'s windows? Give the laptop extra virtual screens (Screens page > More screens on a laptop), then show each one on a monitor.",
+                string.Format("One desktop across both computers: a window that lives on {0} can be dragged onto any monitor that shows {0}, and {1}'s own windows onto any of its own screens.", other, me),
+                string.Format("Screens page: click a monitor and pick which of {0}'s screens it shows (each of {0}'s screens can be on a different monitor).", other),
+                string.Format("Move the mouse onto that monitor - the mouse is now on {0}.", other),
+                string.Format("Grab the window's title bar (for example a PowerShell tab on {0}) and drag it to another monitor showing {0}: it moves there like on a normal multi-monitor PC.", other),
+                string.Format("Want more places for {0}'s windows? Give the laptop extra virtual screens (Screens page > More screens on a laptop), then show each one on a monitor.", other),
                 "Shortcut: Ctrl+Alt+1..9 puts the other computer's main screen on monitor 1..9, Ctrl+Alt+D cycles it through your monitors, Ctrl+Alt+0 hides it."));
             page.Controls.Add(How("Work on the other computer",
                 "Your keyboard and mouse follow the pointer, across both computers.",
-                $"Move the mouse off the edge set on the Connection page to go to {other}; move it back to return.",
-                $"Or move it onto a monitor showing {other}'s picture: it lands at the same spot on {other}.",
+                string.Format("Move the mouse off the edge set on the Connection page to go to {0}; move it back to return.", other),
+                string.Format("Or move it onto a monitor showing {0}'s picture: it lands at the same spot on {0}.", other),
                 "Scroll Lock locks the mouse to the computer it is on."));
             page.Controls.Add(How("Copy and paste between the computers",
                 "Text, pictures and files you copy on one computer can be pasted on the other.",
                 "Copy as usual (Ctrl+C) on one computer.",
                 "Move the mouse to the other computer and paste (Ctrl+V). Clipboard size and on/off: Switching & input page."));
             page.Controls.Add(How("Send files by drag and drop",
-                $"Drop files or folders onto {other}'s picture to send them, encrypted with the pairing code.",
-                $"Drag files from Explorer and hold them over a monitor showing {other}: it lights up \"Drop to send\".",
-                $"Release: they arrive in Downloads\\DeskView on {other}, with a notification there. Nothing is ever overwritten."));
+                string.Format("Drop files or folders onto {0}'s picture to send them, encrypted with the pairing code.", other),
+                string.Format("Drag files from Explorer and hold them over a monitor showing {0}: it lights up \"Drop to send\".", other),
+                string.Format("Release: they arrive in Downloads\\DeskView on {0}, with a notification there. Nothing is ever overwritten.", other)));
             page.Controls.Add(How("Use the server from the laptop",
                 "Two-way: the laptop can also view and control the server's screens.",
                 "On the laptop press Ctrl+Alt+1..9 to show the server's screen 1..9 full screen and control it with the laptop's own keyboard and touchpad.",
                 "Ctrl+Alt+0 comes back to the laptop."));
             return page;
+        }
+
+        Control How(string title, string what, params string[] steps)
+        {
+            var c = Theme.Card(title, what);
+            for (int i = 0; i < steps.Length; i++) c.Controls.Add(Theme.Label(string.Format("{0}.  {1}", i + 1, steps[i])));
+            return c;
         }
 
         static FlowLayoutPanel Wrap(params Control[] cs) { var p = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Margin = new Padding(0, 4, 0, 0) }; foreach (var c in cs) p.Controls.Add(c); return p; }
@@ -174,7 +175,7 @@ namespace DeskView.UI
                 var pc = Theme.PageBody("Screens", "View one of the server's screens full screen and control it with this computer's own keyboard and touchpad.");
                 var view = Theme.Card("View the server", "Or press Ctrl+Alt+1..9 anywhere (Ctrl+Alt+0 comes back).");
                 var row = Wrap();
-                for (int n = 1; n <= 4; n++) { int k = n; row.Controls.Add(Theme.Button($"Its screen {n}", (o, e) => engine.ShowOn(k.ToString()), S.ClientView == n)); }
+                for (int n = 1; n <= 4; n++) { int k = n; row.Controls.Add(Theme.Button(string.Format("Its screen {0}", n), (o, e) => engine.ShowOn(k.ToString()), S.ClientView == n)); }
                 row.Controls.Add(Theme.Button("Back to this computer", (o, e) => engine.ShowOn("off")));
                 view.Controls.Add(row);
                 pc.Controls.Add(view);
@@ -182,8 +183,8 @@ namespace DeskView.UI
                 pc.Controls.Add(VideoCard());
                 return pc;
             }
-            var page = Theme.PageBody("Screens", $"Any of your monitors can show any of {Other}'s screens. Click a monitor to choose. " +
-                $"Move the mouse onto a monitor showing {Other} to use it - the mouse then moves across all of {Other}'s screens, so you can drag " +
+            var page = Theme.PageBody("Screens", string.Format("Any of your monitors can show any of {0}'s screens. Click a monitor to choose. ", Other) +
+                string.Format("Move the mouse onto a monitor showing {0} to use it - the mouse then moves across all of {0}'s screens, so you can drag ", Other) +
                 "windows between them like a normal multi-monitor desktop.");
             var map = Theme.Card("Your monitors");
             var sm = new ScreenMap(engine);
@@ -314,7 +315,7 @@ namespace DeskView.UI
             corners.Controls.Add(Theme.Row("Corner size", Theme.Number(S.CornerSize, 0, 500, v => S.CornerSize = v), Theme.Label("pixels")));
             var keys = Theme.Card("Keys on the other computer", "Remap modifier keys (for example Mac-style keyboards) and handle Caps/Num/Scroll Lock keys that only send one press.");
             string[] mods = { "shift", "ctrl", "alt", "altgr", "meta", "super", "none" };
-            ComboBox Mod(string value, Action<string> set) { var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 }; c.Items.AddRange(mods); c.SelectedItem = mods.Contains(value) ? value : mods[0]; c.SelectedIndexChanged += (o, e) => set((string)c.SelectedItem); return c; }
+            Func<string, Action<string>, ComboBox> Mod = (value, set) => { var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 }; c.Items.AddRange(mods); c.SelectedItem = mods.Contains(value) ? value : mods[0]; c.SelectedIndexChanged += (o, e) => set((string)c.SelectedItem); return c; };
             keys.Controls.Add(Theme.Row("Shift / Ctrl / Alt", Mod(S.ModifierShift, v => S.ModifierShift = v), Mod(S.ModifierCtrl, v => S.ModifierCtrl = v), Mod(S.ModifierAlt, v => S.ModifierAlt = v)));
             keys.Controls.Add(Theme.Row("AltGr / Meta / Super", Mod(S.ModifierAltGr, v => S.ModifierAltGr = v), Mod(S.ModifierMeta, v => S.ModifierMeta = v), Mod(S.ModifierSuper, v => S.ModifierSuper = v)));
             keys.Controls.Add(Wrap(Theme.Check("Half-duplex Caps Lock", S.HalfDuplexCapsLock, v => S.HalfDuplexCapsLock = v), Theme.Check("Half-duplex Num Lock", S.HalfDuplexNumLock, v => S.HalfDuplexNumLock = v),
@@ -404,7 +405,7 @@ namespace DeskView.UI
             return page;
         }
 
-        void Toast(string text) => TrayApp.Instance?.Notify(text, false);
+        void Toast(string text) { var t = TrayApp.Instance; if (t != null) t.Notify(text, false); }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {

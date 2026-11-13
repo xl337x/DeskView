@@ -21,18 +21,22 @@ namespace DeskView.UI
         public static readonly Color Warn = Color.FromArgb(217, 119, 6);
         public static readonly Color Bad = Color.FromArgb(220, 38, 38);
 
-        public static Font Body => new Font("Segoe UI", 10f);
-        public static Font Small => new Font("Segoe UI", 9f);
-        public static Font Bold => new Font("Segoe UI Semibold", 10f);
-        public static Font Title => new Font("Segoe UI Semibold", 16f);
-        public static Font Heading => new Font("Segoe UI Semibold", 12f);
+        public static Font Body { get { return new Font("Segoe UI", 10f); } }
+        public static Font Small { get { return new Font("Segoe UI", 9f); } }
+        public static Font Bold { get { return new Font("Segoe UI Semibold", 10f); } }
+        public static Font Title { get { return new Font("Segoe UI Semibold", 16f); } }
+        public static Font Heading { get { return new Font("Segoe UI Semibold", 12f); } }
 
-        public static Label Label(string text, Font font = null, Color? color = null) =>
-            new Label { UseMnemonic = false, Text = text, AutoSize = true, Font = font ?? Body, ForeColor = color ?? Text, Margin = new Padding(0, 4, 0, 4) };
+        public static Label Label(string text, Font font = null, Color? color = null)
+        {
+            return new Label { UseMnemonic = false, Text = text, AutoSize = true, Font = font ?? Body, ForeColor = color ?? Text, Margin = new Padding(0, 4, 0, 4) };
+        }
 
         /// <summary>Wrapped explanatory text (the "guided" part of every page).</summary>
-        public static Label Hint(string text, int width = 640) =>
-            new Label { UseMnemonic = false, Text = text, AutoSize = true, MaximumSize = new Size(width, 0), Font = Small, ForeColor = Muted, Margin = new Padding(0, 0, 0, 10) };
+        public static Label Hint(string text, int width = 640)
+        {
+            return new Label { UseMnemonic = false, Text = text, AutoSize = true, MaximumSize = new Size(width, 0), Font = Small, ForeColor = Muted, Margin = new Padding(0, 0, 0, 10) };
+        }
 
         public static Button Button(string text, EventHandler onClick, bool primary = false)
         {
@@ -114,7 +118,8 @@ namespace DeskView.UI
                 try { Clipboard.SetDataObject(text ?? "", true, 10, 100); return true; }
                 catch (Exception) { System.Threading.Thread.Sleep(50); }
             }
-            TrayApp.Instance?.Notify("The clipboard is busy (another program is using it). Try Copy again in a moment.", true);
+            var app = TrayApp.Instance;
+            if (app != null) app.Notify("The clipboard is busy (another program is using it). Try Copy again in a moment.", true);
             return false;
         }    }
 }
