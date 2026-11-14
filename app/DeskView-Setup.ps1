@@ -52,6 +52,21 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
     Write-Host 'Ask IT to allow DeskView (or to sign it).'; exit 1
 }
 
+# Asked once per laptop: an update (or a reinstall) leaves the extra screens as they are and doesn't ask again.
+$extraScreensAsked = Join-Path $settingsDir 'extra-screens-chosen.txt'
+function Test-ExtraScreensChosen {
+    if (Test-Path $extraScreensAsked) { return $true }
+    [bool](Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { $_.FriendlyName -match 'Virtual Display' -or ($_.HardwareID -join ' ') -match 'MttVDD' })
+}
+function Ask-ExtraScreens {
+    Write-Host 'This laptop''s windows can be dragged onto the server''s monitors through extra screens (one per monitor).'
+    $answer = Read-Host '   How many extra screens should this laptop get? (0-4, Enter = 3)'
+    $n = if ($answer -match '^[0-4]$') { [int]$answer } else { 3 }
+    New-Item -ItemType Directory -Force $settingsDir | Out-Null
+    Set-Content $extraScreensAsked $n
+    $n
+}
+
 # ---- virtual screens (Virtual Display Driver, github.com/VirtualDrivers/Virtual-Display-Driver) -------------
 # Extra screens Windows treats as real monitors: DeskView streams them like any other screen, so the other
 # computer can show each on one of its monitors and windows can be dragged between them.
@@ -176,10 +191,8 @@ if (-not $Source) { $Source = $PSScriptRoot }
 if (-not (Test-Path (Join-Path $Source 'DeskView.ps1'))) { throw "No DeskView app in '$Source' (run install.ps1, or pass -Source <checkout>\app)." }
 
 # A laptop's windows can only go onto the other computer's monitors through extra (virtual) screens: offer them.
-if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin) {
-    Write-Host 'This laptop''s windows can be dragged onto the server''s monitors through extra screens (one per monitor).'
-    $answer = Read-Host '   How many extra screens should this laptop get? (0-4, Enter = 3)'
-    $VirtualScreens = if ($answer -match '^[0-4]$') { [int]$answer } else { 3 }
+if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin -and -not (Test-ExtraScreensChosen)) {
+    $VirtualScreens = Ask-ExtraScreens
 }
 
 # 1. Administrator part - only when something is actually missing.
@@ -261,10 +274,8 @@ if (-not $Role) {
     }
 }
 # The role was only learned just now: offer a client its extra screens here (same question as above).
-if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin) {
-    Write-Host 'This laptop''s windows can be dragged onto the server''s monitors through extra screens (one per monitor).'
-    $answer = Read-Host '   How many extra screens should this laptop get? (0-4, Enter = 3)'
-    $VirtualScreens = if ($answer -match '^[0-4]$') { [int]$answer } else { 3 }
+if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin -and -not (Test-ExtraScreensChosen)) {
+    $VirtualScreens = Ask-ExtraScreens
     if (Run-Elevated "-Elevated -VirtualScreens $VirtualScreens") { if ($VirtualScreens -gt 0) { Arrange-VirtualScreens } }
     else { Write-Warning 'The extra screens were not added (see above).' }
 }
