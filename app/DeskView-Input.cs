@@ -896,14 +896,22 @@ public class DeskViewForwarder
 
     static bool Held(int vk) { return (DvNative.GetAsyncKeyState(vk) & 0x8000) != 0; }
 
+    /// <summary>The local pointer stays parked; how far each move tried to take it is the motion for the other
+    /// machine. Moves already queued when the pointer switched were measured from where it was before parking
+    /// (hundreds of pixels away): no hand moves that far in one event, so those are dropped instead of making the
+    /// remote pointer jump. Public for tests.</summary>
+    public void MoveFromParked(int x, int y)
+    {
+        int dx = x - parkX, dy = y - parkY;
+        if (Math.Abs(dx) > MaxStep || Math.Abs(dy) > MaxStep) { Interlocked.Increment(ref StaleMoves); return; }
+        if (dx != 0 || dy != 0) Enqueue("R " + dx + " " + dy);
+    }
+    public const int MaxStep = 400;
+    public int StaleMoves;                                // pre-switch moves dropped (tests)
+
     void RemoteMouse(int msg, DvNative.MSLLHOOKSTRUCT m)
     {
-        if (msg == 0x0200)
-        {
-            int dx = m.pt.X - parkX, dy = m.pt.Y - parkY;     // the local pointer stays parked: this is the motion
-            if (dx != 0 || dy != 0) Enqueue("R " + dx + " " + dy);
-            return;
-        }
+        if (msg == 0x0200) { MoveFromParked(m.pt.X, m.pt.Y); return; }
         if (msg == 0x020A || msg == 0x020E) { Enqueue((msg == 0x020A ? "W " : "H ") + (short)(m.mouseData >> 16)); return; }
         int b = ButtonOf(msg, m.mouseData);
         if (b >= 0) Enqueue("B " + b + " " + ((msg == 0x0201 || msg == 0x0204 || msg == 0x0207 || msg == 0x020B) ? 1 : 0));
