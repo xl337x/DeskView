@@ -1,4 +1,4 @@
-<#
+﻿<#
   Drives the DeskView app's real windows: every page, button, checkbox, list and number box; the setup assistant;
   the tray menu. Runs the app's code in this process in test mode (own settings folder, no engine service calls,
   no video), so the real setup is never touched. Screenshots go to $env:TEMP\deskview-gui-qa.
@@ -91,7 +91,7 @@ if ($script:clipOk) {
 }
 $next.PerformClick(); Pump 300; Shot $wiz 'wizard-5-screens'
 # the monitor list: 'none' + one entry per monitor (2 entries on a one-screen laptop)
-$combo = All-Controls $wiz | ? { $_ -is [Windows.Forms.ComboBox] -and $_.Visible -and $_.Items.Count -ge 2 } | Select -Last 1
+$combo = All-Controls $wiz | ? { $_ -is [Windows.Forms.ComboBox] -and $_.Visible -and $_.Items.Count -ge 2 -and "$($_.Items[0])" -eq 'Nowhere for now' } | Select -First 1   # the monitor list (not the side list)
 $combo.SelectedIndex = 1
 $next.PerformClick(); Pump 600; Shot $wiz 'wizard-6-ready'
 Check 'assistant: last step offers Finish' ($next.Text -eq 'Finish')
