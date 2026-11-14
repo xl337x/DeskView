@@ -13,7 +13,14 @@ the code independently and one judge verifying each claim against the code (two 
   needs its own program and service. Old installs keep the classic engine until the user switches (never switched
   silently by an update).
 - **Pinned FFmpeg, always installed next to the app**, checked by SHA256, mirrored on this repo's release. A random
-  FFmpeg on PATH may lack ddagrab/SRT or change. (Earlier the app even looked next to powershell.exe - fixed.)
+  FFmpeg on PATH may lack ddagrab/SRT or change. Lookup order: the app folder's `ffmpeg\` first, then the process
+  folder (powershell.exe's - a leftover fallback, harmless), PATH, winget links. (It used to look only next to
+  powershell.exe, so a fresh PC without FFmpeg on PATH had no video.)
+- **Video always encrypted.** An earlier fallback connected without the passphrase after two failed attempts, for the
+  old pre-app script version (one unencrypted screen). Nobody runs that version and the fallback meant a picture
+  could travel unencrypted, so it was removed (found by a cold-start review: README said "everything encrypted").
+- **Requirements: Windows 10 1703+ and .NET Framework 4.7.2+** (SetThreadDpiAwarenessContext; PBKDF2 with SHA-256).
+  Both are in every supported Windows today; documented in README.
 
 ## Pictures
 - **Topmost via our own window holding the player as a child.** Windows silently ignores SetWindowPos(TOPMOST) for
@@ -53,6 +60,9 @@ the code independently and one judge verifying each claim against the code (two 
 - **Liveness by answered pings, timed from the oldest unanswered ping.** A dead link (laptop asleep) hands input
   back within ~4 s; idle gaps and long clipboard writes don't count.
 - **Moves may be dropped on a stalled link, presses/keys/releases and the move placing a press never.**
+- **File errors reach the sender.** The receiver answers `<ERR why` when it can't save, then reads away what the sender
+  already sent before closing (closing with unread data makes Windows reset the connection, which also destroyed the
+  reason); the sender checks for an early answer while sending. Was flaky 3 of 4 runs, now 10/10.
 - **Pointer back first, clipboard after** (a big clipboard no longer holds the keyboard hostage). Clipboard also
   follows the keyboard in picture mode (`CQ`).
 
@@ -80,7 +90,7 @@ the code independently and one judge verifying each claim against the code (two 
 - Round 2 (critics on the round-1 diff): 15 confirmed fixes-to-fixes (false link drop at forwarding start, lasting
   lag on the long probe, older-agent multi-picture, shared report files, FFmpeg swap, live->dead between ticks,
   uninstalling foreign drivers, focus-stealing re-raise, held buttons on keyboard-only switch, toast buried, drive
-  roots, setup reading .bak, settings lock retry, long ERR replies, dropped press-move). Rejected: shorter GOP has no
-  benefit (it does: nobuffer start), GPU-path fallback by exit code (speculative), clipboard race (ms window).
+  roots, setup reading .bak, settings lock retry, long ERR replies, dropped press-move). Rejected: "shorter GOP has no
+  benefit" (a critic's claim - wrong: with nobuffer the key-frame interval bounds the first picture, so -g 30 stays), GPU-path fallback by exit code (speculative), clipboard race (ms window).
 - Live QA then found three more the reviews missed: report without stream info (-nostats), smart screens grabbing
   monitors after a restart / after a disconnect, ~400-650 ms video lag. All fixed with tests where testable.

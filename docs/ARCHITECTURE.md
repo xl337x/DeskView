@@ -49,10 +49,10 @@ Old peers ignore unknown messages; newer messages are only used after `<V 2` was
 Sender: `ddagrab` (Desktop Duplication, output on the right adapter) -> GPU encoder (nvenc/qsv/amf/mf, else
 libx264), `-g 30 -bf 0`, mpegts, SRT listener on 9000+n-1 (encrypted). A viewer connecting gets the stream; when it
 leaves (or `RS`), the listener restarts.
-Player: `ffplay` caller, `-fflags nobuffer`, `-vf setpts=N*0.001/TB` (always show the newest frame), `-autoexit`,
-SRT `timeout=3 s` (dead stream ends it), `-nostats` (report stays small). Its window is adopted as a child of a
-topmost
-DeskView window (`DeskViewPictureHost`) - Windows refuses "always on top" for it otherwise. A picture is live when
+Player: `ffplay` caller with `-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext
+-probesize 32768 -analyzeduration 0 -vf setpts=N*0.001/TB -autoexit -nostats` and SRT `timeout=3 s` (the reason for
+each flag is in a comment above it in `app/Core/Media.cs` StartPlayer, and in DECISIONS.md). Its window is adopted as a
+child of a topmost DeskView window (`DeskViewPictureHost`) - Windows refuses "always on top" for it otherwise. A picture is live when
 its window shows (first frame); size/position come from the other computer's `SR` list.
 Watchdogs: player exit -> restart (0.5/1/2 s back-off), 12 s without a picture -> retry, hung/lost window -> restart;
 6 failures without ever a picture -> monitor given back with a notice.

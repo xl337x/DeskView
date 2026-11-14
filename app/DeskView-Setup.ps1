@@ -20,8 +20,8 @@ param(
     [string]$ServerAddress,                                        # client: the server's address (else found on the network)
     [ValidateRange(-1, 4)] [int]$VirtualScreens = -1,              # add N virtual screens (0 removes them; -1 leaves them)
     [ValidateSet('Left', 'Right')] [string]$VirtualScreensSide = 'Left',   # where they sit next to this computer's own screens
-    [switch]$ClassicEngine,
-    [string]$FFmpegZip,                                            # the pinned FFmpeg zip, for a PC without internet access                                        # also install the classic keyboard/mouse engine (optional)
+    [switch]$ClassicEngine,                                        # also install the classic keyboard/mouse engine (optional)
+    [string]$FFmpegZip,                                            # the pinned FFmpeg zip, for a PC without internet access
     [switch]$Uninstall,
     [switch]$NoStart,             # tests: install only, don't start DeskView or add it to startup
     [switch]$SkipAdmin,           # tests: no administrator part
@@ -123,7 +123,7 @@ function Set-VirtualScreens([int]$count) {
 }
 
 # Not elevated, as the signed-in user: switch the desktop onto the virtual screens and put them, 1920x1080 each, in a
-# row to the right of this computer's own screens.
+# row beside this computer's own screens (-VirtualScreensSide: Left by default, so the panel stays the right-most).
 function Arrange-VirtualScreens {
     try {
         Add-Type -Path (Join-Path $PSScriptRoot 'DeskView-Displays.cs') -ErrorAction Stop

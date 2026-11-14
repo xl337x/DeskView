@@ -76,7 +76,7 @@ namespace DeskView
     public class Player
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
-        public Size? RemoteRes; public string RemoteRect; public bool Passive, WasLive; public DeskViewPictureHost Host; public int AdoptFails; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
+        public Size? RemoteRes; public string RemoteRect; public bool Passive, WasLive; public DeskViewPictureHost Host; public int AdoptFails; public int Fails; public bool EverLive; public bool Announced, WarnedDown;
         public DateTime LastStart = DateTime.MinValue, ShownAt = DateTime.MinValue;
         public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
@@ -90,10 +90,13 @@ namespace DeskView
         bool cpuPath;
         public bool HasFFmpeg { get { return ffmpeg != null && ffplay != null; } }
         public event Action<string, bool> Notice;   // message, isWarning
-        bool warnedLegacy;
 
         public Media(AppSettings settings) { S = settings; }
 
+        // SRT latency = how long a lost packet may be re-sent before its frame is due: a few round trips. Wired LAN
+        // round trips are ~1 ms (40 ms is plenty); Wi-Fi has bursts of loss and 5-20 ms round trips (150 ms - and it
+        // adds that much delay: see docs/OPEN-ISSUES.md about trying less). Bitrates: enough for sharp text at
+        // 1080p60 with a hardware encoder; Wi-Fi halved so the link keeps headroom. Both ends use the larger latency.
         static readonly Dictionary<string, int> LatencyMs = new Dictionary<string, int> { { "Wired", 40 }, { "WiFi", 150 } };
         static readonly Dictionary<string, int> BitrateMbps = new Dictionary<string, int> { { "Wired", 20 }, { "WiFi", 10 } };
         string Profile { get { return S.Profile == "Auto" ? Tools.LinkType() : S.Profile; } }
@@ -136,7 +139,8 @@ namespace DeskView
             string prof = Profile, enc = Encoder();
             int mbps = BitrateMbps[prof]; string b = mbps + "M", buf = (mbps * 500) + "k";
             // A viewer that joins (a monitor switched to this screen, smart screens, a reconnect) shows nothing until the
-            // next key frame: one every 0.5 s on a wired network (1 s on Wi-Fi) instead of 2 s, at a small bitrate cost.
+            // next key frame (the player drops what it reads before it knows the picture size): one every 0.5 s,
+            // on any network, at a small bitrate cost.
             string gop = "30";
             string encArgs;
             switch (enc)
@@ -148,6 +152,7 @@ namespace DeskView
                 default: encArgs = "-c:v libx264 -preset ultrafast -tune zerolatency -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
             }
             int port = S.VideoPort + n - 1;
+            // pkt_size 1316 = 7 MPEG-TS packets: fits one UDP datagram without fragmenting on any normal network
             string url = "srt://0.0.0.0:" + port + "?mode=listener&latency=" + (LatencyMs[prof] * 1000) + "&pkt_size=1316&transtype=live&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             // Frames stay on the GPU when the encoder can take them (~3x less CPU); CPU path if that keeps failing.
             string cap = "ddagrab=output_idx=" + output.Index + ":framerate=60:draw_mouse=1", chain, pix = "", device = "";
@@ -169,11 +174,12 @@ namespace DeskView
             st.Report = Path.Combine(Path.GetTempPath(), "deskview-ffmpeg-screen" + n + ".log");
             try { File.Delete(st.Report); } catch { }
             var env = new Dictionary<string, string> { { "FFREPORT", "file=" + st.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" } };
+            // -flush_packets 1: every frame leaves at once (no muxer buffering); resend_headers: stream info goes out
+            // again with key frames, so a viewer joining mid-stream can start
             st.P = Start(ffmpeg, "-hide_banner -loglevel error -nostats " + device + "-f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", env);
             st.Started = DateTime.Now; st.Name = Tools.Short(screen);
         }
 
-        /// <summary>One listener per screen, kept alive with back-off when it keeps failing.</summary>
         /// <summary>DESKVIEW_NOMEDIA=1: no video processes at all (tests of everything else).</summary>
         public static readonly bool NoMedia = Environment.GetEnvironmentVariable("DESKVIEW_NOMEDIA") == "1";
 
@@ -271,17 +277,15 @@ namespace DeskView
             if (ffplay == null || string.IsNullOrEmpty(peer)) return;
             string prof = Profile; var r = pl.Screen.Bounds;
             int port = S.VideoPort + pl.RemoteN - 1;
-            // An old DeskView streams one screen unencrypted: after two failed encrypted attempts, alternate - but
-            // never once this screen has shown a picture (then it is a dropped connection, not an old DeskView).
-            pl.Legacy = !pl.EverLive && pl.Fails >= 2 && pl.Fails % 2 == 1;
-            string enc = pl.Legacy ? "" : "&passphrase=" + S.VideoKey() + "&pbkeylen=32";
-            string url = "srt://" + Tools.Host(peer) + ":" + port + "?mode=caller&latency=" + (LatencyMs[prof] * 1000) + "&transtype=live&connect_timeout=3000" + enc;
+            // Always encrypted (an unencrypted fallback for the old pre-app script version was removed: nobody runs it,
+            // and it would have let a picture travel unencrypted).
+            string url = "srt://" + Tools.Host(peer) + ":" + port + "?mode=caller&latency=" + (LatencyMs[prof] * 1000) + "&transtype=live&connect_timeout=3000&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             // Frames 1 ms apart: the player is always "behind", shows the newest frame and drops older ones, so any lag
             // (start-up, a network or CPU hiccup) drains by itself. Measured on the server (loopback, key-to-picture):
             // ~400 ms before, 150-190 ms with this; after a 1.5 s stall back to normal within ~2 s.
             string vf = "-vf setpts=N*0.001/TB" + (S.Picture == "Stretch" ? ",scale=" + r.Width + ":" + r.Height : "") + " ";
-            // a stream that stops sending (the other computer asleep, network gone) ends the player after 4 s instead of
-            // leaving a frozen picture (3 s): the restart below takes over
+            // a stream that stops sending (the other computer asleep, network gone) ends the player after 3 s instead of
+            // leaving a frozen picture: the restart below takes over
             url += "&timeout=3000000";
             try { File.Delete(pl.Report); } catch { }
             var env = new Dictionary<string, string>
@@ -289,18 +293,19 @@ namespace DeskView
                 { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" },
                 { "FFREPORT", "file=" + pl.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" },
             };
-            // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
-            bool bigProbe = pl.Legacy || (pl.Fails >= 2 && !pl.EverLive);
+            // Probe: 32 KB and no analysis - the picture size is known from the first key frame, and every byte probed
+            // is time before the first picture. After two failed starts of a screen that never showed a picture, a
+            // longer probe (a sender that starts slowly).
+            bool bigProbe = pl.Fails >= 2 && !pl.EverLive;
             string probe = bigProbe ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
-            // nobuffer only with the long probe: there the probed second or more would stay as lasting lag (the next
-            // key frame is at most 0.5-1 s away); with the short probe it would only throw away the first key frame
-            // Always nobuffer: probed packets would otherwise become a lasting lag (the player schedules frames from
-            // the first one and never catches up). The first picture then waits for the next key frame (<= 0.5 s).
-            string flags = "-fflags nobuffer+discardcorrupt ";
-            // Not "-fflags nobuffer": it drops the packets read while finding the picture size - the first key frame -
-            // so the picture only appeared at the next one (measured: 3.3 s -> 1.0 s to the first picture).
+            // nobuffer: the player schedules frames from the first one and never catches up (it doesn't treat srt:// as
+            // live), so packets read while probing would become a lasting lag; dropping them costs the first key frame
+            // (the next is <= 0.5 s away). discardcorrupt: a damaged frame is skipped instead of shown as garbage.
+            // -flags low_delay: no decoder reordering delay (the sender uses no B-frames). -framedrop with
+            // -sync ext: frames that are late against the clock are dropped instead of slowing the picture down.
             // No "-hwaccel d3d11va": this player's renderer can't use it (decoding stayed on the CPU anyway) and it
             // made the picture start later. -nostats: the report holds only what is read from it.
+            string flags = "-fflags nobuffer+discardcorrupt ";
             pl.P = Start(ffplay, "-hide_banner -loglevel error -nostats -autoexit " + flags + "-flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
             pl.LastStart = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
         }
@@ -384,7 +389,6 @@ namespace DeskView
                 {
                     pl.RemoteRes = info.size; pl.RemoteRect = info.rect; pl.Fails = 0; pl.EverLive = true; changed = true;
                     if (!pl.Announced) { pl.Announced = true; pl.WarnedDown = false; var n = Notice; if (n != null) n(S.RemoteName + " screen " + pl.RemoteN + " is now on " + pl.Key + " (" + info.size.Width + "x" + info.size.Height + ")", false); }
-                    if (pl.Legacy && !warnedLegacy) { warnedLegacy = true; var n = Notice; if (n != null) n("The other computer runs an old DeskView: its picture is not encrypted. Update it.", true); }
                 }
                 else if ((DateTime.Now - pl.LastStart).TotalSeconds > 12)
                 {

@@ -61,6 +61,8 @@ try {
     $agent.ReceiveFolder = Join-Path $blocker 'inside'      # a folder can't be made inside a file: saving fails
     $err = [DeskViewFiles]::Send('127.0.0.1', 9104, 'TESTCODE2345', [string[]]@("$src\hello.txt"), $null)
     Check 'the receiver cannot save: the sender gets the reason instead of "sent"' ($err -like 'the other computer could not save it*') "error=$err"
+    $err = [DeskViewFiles]::Send('127.0.0.1', 9104, 'TESTCODE2345', [string[]]@("$src\big.bin"), $null)
+    Check 'same for a 3 MB file (the sender is still writing when the answer comes)' ($err -like 'the other computer could not save it*') "error=$err"
     $agent.ReceiveFolder = $okFolder; Start-Sleep -Milliseconds 300
     $err = [DeskViewFiles]::Send('127.0.0.1', 9104, 'TESTCODE2345', [string[]]@("$src\folder\a.txt"), $null)
     Check 'after that, sending works again (confirmed)' ($err -eq $null -and (Test-Path "$dst\a.txt")) "error=$err"

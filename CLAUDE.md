@@ -17,7 +17,7 @@ Start here, then read in this order:
 
 ## Resuming work in a new session (checklist)
 1. Read the docs above; `git log --oneline -20` for the latest changes.
-2. Run `tests\run-all.ps1` - everything must pass before changing anything.
+2. Run `tests\run-all.ps1` - everything must pass before changing anything (Windows 10 1703+, .NET Framework 4.7.2+).
 3. Take the top item of `docs/OPEN-ISSUES.md` ("To verify next") unless the owner asks otherwise.
 4. After a fix: test, live-prove if it touches pictures/input (`tests/live`), record numbers in QA-LOG, the reason in
    DECISIONS, update OPEN-ISSUES, commit as xl337x, push `next` (laptop installs it) and `main`.
@@ -62,13 +62,16 @@ tests\*.tests.ps1           run-all.ps1 runs them; input.tests must run on a mac
 
 ## Everyday commands
 - All tests: `powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-all.ps1` (or each `tests\X.tests.ps1`).
+  It leaves the mouse and keyboard alone; `-WithInput` adds input.tests + gui-deep (they drive the real mouse/keyboard
+  - say so first), `-Live` the classic-engine portal test. Two-PC live tests: `tests\live`.
 - Install from a checkout: `powershell -ExecutionPolicy Bypass -File app\DeskView-Setup.ps1 -Source app -Role Server|Client`
   (`-SkipAdmin` skips firewall/driver; `-PairCode`, `-ServerAddress`, `-VirtualScreens N`, `-FFmpegZip <zip>`).
-- One-line install: `iwr https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 -OutFile i.ps1; .\i.ps1`
+- One-line install: `irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex` (options: see README).
 - Logs: `%APPDATA%\DeskView\deskview.log` (every player restart reason, smart-screen decisions, manual changes);
   player/sender reports: `%TEMP%\deskview-ffplay-*.log`, `%TEMP%\deskview-ffmpeg-screen*.log`.
 - Live-test switches: env `DESKVIEW_QA_INPUT=1` (injected input counts as real), `DESKVIEW_NOMEDIA=1` (no video),
-  `DESKVIEW_HOME` / `DESKVIEW_INSTALL` (test folders).
+  `DESKVIEW_HOME` (settings folder instead of %APPDATA%\DeskView) / `DESKVIEW_INSTALL` (install folder instead of
+  %LOCALAPPDATA%\DeskView) - tests use throwaway folders so the real install is never touched.
 - Branches: `next` = what the test laptop installs; `main` = released.
 
 ## The two test machines (shapes only - never write their names, users or addresses into the repo)

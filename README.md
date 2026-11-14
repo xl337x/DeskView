@@ -4,7 +4,7 @@
 
 ## Install - one line
 
-Open **PowerShell** on each Windows 10/11 computer and paste:
+Open **PowerShell** on each Windows 10 (1703 or newer) / Windows 11 computer and paste:
 
 ```powershell
 irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
@@ -57,6 +57,7 @@ iwr https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 -OutFile 
 | Server | **Ctrl+Alt+1..9** | the laptop's main screen appears on your monitor 1..9; move the mouse onto it to work there |
 | Client | **Ctrl+Alt+1..9** | the server's monitor 1..9 fills this screen; this computer's keyboard and touchpad control it |
 | Either | **Ctrl+Alt+0** | everything back: pictures hidden, pointer home |
+| Either | **Ctrl+Alt+D** | cycle the other computer's picture through the monitors |
 
 Double-click the tray icon for the app: live status, a guided setup assistant, the screen map, pairing, switching,
 clipboard and security options, logs.
@@ -73,12 +74,14 @@ clipboard and security options, logs.
 - The pairing code is never sent: both computers prove they know it (PBKDF2-SHA256 + HMAC over fresh nonces); then
   every message is AES-256 encrypted and HMAC-authenticated with a sequence number (no replay, no tampering,
   reflected frames refused). 5 wrong attempts lock an address out for a minute.
-- Video is encrypted (SRT, AES-256) with a key derived from the pairing code. Discovery is sealed with the code too.
+- Video is always encrypted (SRT, AES-256) with a key derived from the pairing code. Discovery is sealed with the
+  code too.
 - Firewall rules allow the local network only.
 
 ## Limits
 
-- Two Windows 10 1607+/11 computers on the same local network (wired is smoothest).
+- Two Windows 10 (1703+) / Windows 11 computers with .NET Framework 4.7.2 or newer (built into Windows 10 1803+ and
+  Windows 11), on the same local network (wired is smoothest).
 - Secure screens (lock screen, UAC prompts) can't be captured; windows running as administrator on the other
   computer can't be controlled by the built-in engine. Clipboard: text (send files by dragging them onto a picture).
 - Extra screens need a driver (installed by setup, needs administrator rights; often blocked on company PCs).

@@ -151,7 +151,6 @@ namespace DeskView
             if (Builtin && S.Role != Role.None && CoreControl.Installed) try { CoreControl.Start(); } catch { }   // the mouse keeps working without DeskView
         }
 
-        /// <summary>Write the engine settings; start or restart the engine when they changed (or when asked).</summary>
         /// <summary>Switching edge, clipboard and peers for DeskView's own engine (or off for the classic one).</summary>
         public void ApplyBuiltin()
         {
@@ -353,9 +352,9 @@ namespace DeskView
         string lastOccupied = null; DateTime lastOccupiedSent = DateTime.MinValue, lastOccupiedCheck = DateTime.MinValue;
         readonly Dictionary<string, int> autoShown = new Dictionary<string, int>();        // monitor -> screen shown by smart screens
         readonly Dictionary<string, DateTime> emptySince = new Dictionary<string, DateTime>();
-        readonly HashSet<int> userReleased = new HashSet<int>();
-        readonly Dictionary<int, DateTime> smartFailed = new Dictionary<int, DateTime>();
-        readonly Dictionary<int, DateTime> releasedEmptySince = new Dictionary<int, DateTime>();   // screens smart screens showed whose picture never came   // screens the user gave back while they held windows
+        readonly HashSet<int> userReleased = new HashSet<int>();                               // screens the user gave back while they held windows
+        readonly Dictionary<int, DateTime> smartFailed = new Dictionary<int, DateTime>();      // screens smart screens showed whose picture never came
+        readonly Dictionary<int, DateTime> releasedEmptySince = new Dictionary<int, DateTime>();   // given-back screens: since when reported empty
         string lastBusyLogged = null;
 
         /// <summary>Client: tell the server which extra screens (2, 3, ...) hold windows, when that changes.</summary>

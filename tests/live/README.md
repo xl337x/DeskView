@@ -33,6 +33,13 @@ scheduled task with `/IT`, because SSH runs in session 0):
 | `laptop-killsender.ps1` | kills the sender of screen 2 (recovery test) |
 | `laptop-sendfile.ps1` | sends a 2 MB file to the server with DeskView's transfer code and prints the hash |
 
+Prerequisites: the laptop runs the Windows OpenSSH server with key login for its user (Settings > Optional
+features > OpenSSH Server; the server's public key in that user's `.ssh\authorized_keys`, or for an administrator
+account in `C:\ProgramData\ssh\administrators_authorized_keys`).
+
+Coupled scripts: `laptop-drive-view.ps1` expects `server-observe.ps1`'s window on the server's main monitor (blue
+background with green value ~99, text box near the top at y=140..190 of 1080) - change both together.
+
 Pitfalls learned: inject navigation keys with the extended flag (else Windows adds fake Shift events); WinForms
 multiline TextBox has no Ctrl+A; ffprobe's default 5 s analysis makes first-packet times meaningless; don't compare
 timestamps across the two PCs (clock offset ~0.2 s); `Remove-Item`/`del` in compound commands may be blocked by the

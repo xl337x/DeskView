@@ -10,6 +10,12 @@ Ordered by importance. When fixing one, add the reason to DECISIONS.md and numbe
 4. **Drag a real file onto a picture** (OLE drag into the drop zone). Transfer itself is proven both ways; the
    synthetic OLE drag hung the test (DoDragDrop) - needs a real-hand test or a better harness.
 
+## Housekeeping
+- The installer leaves the FFmpeg zip (82 MB, kept on purpose for re-installs) and `DeskView-Setup-elevated.ps1` in
+  %TEMP%; move the zip to a cache folder that uninstall cleans.
+- `THIRD_PARTY_NOTICES.md` keeps the classic engine unnamed (owner's rule) - check that this still satisfies its
+  licence notice requirements.
+
 ## Known problems
 - **Wi-Fi SRT latency 150 ms** adds ~150-280 ms. Try 80-100 ms on the owner's Wi-Fi and watch for drops
   (`discardcorrupt` hides them; count them).

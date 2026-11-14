@@ -511,6 +511,14 @@ public class DeskViewAgent
             var why = e.Message.Replace('\r', ' ').Replace('\n', ' ');
             if (why.Length > 300) why = why.Substring(0, 300) + "...";
             try { DvProto.WriteFrame(s, keys, ++replySeq, "<ERR " + why); } catch { }
+            // Read away what the sender already sent before closing: closing with unread data makes Windows reset the
+            // connection, and a reset also throws away the reason just written (the sender then only saw "interrupted").
+            try
+            {
+                var sink = new byte[65536]; var until = DateTime.UtcNow.AddSeconds(5); s.ReadTimeout = 1000;
+                while (DateTime.UtcNow < until && s.Read(sink, 0, sink.Length) > 0) { }
+            }
+            catch { }
             throw;
         }
         finally
@@ -1419,6 +1427,12 @@ public static class DeskViewFiles
                         {
                             DvProto.WriteFrame(s, keys, ++seq, "D " + Convert.ToBase64String(buf, 0, r));
                             sent += r; left -= r;
+                            // the other side only ever answers early when it cannot save: stop and say why
+                            if (c.Available > 0)
+                            {
+                                var early = DvProto.ReadFrame(s, keys, ref rseq, DvProto.MaxFileFrame);
+                                return early.StartsWith("<ERR ") ? "the other computer could not save it: " + early.Substring(5) : "the other computer answered unexpectedly";
+                            }
                             if (progress != null) progress(string.Format("{0}/{1}: {2} ({3:0}%)", n, items.Count, it.Value, total == 0 ? 100 : sent * 100.0 / total));
                         }
                         if (left > 0) return it.Value + " got shorter while it was being sent - send it again";
