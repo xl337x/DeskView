@@ -307,6 +307,7 @@ public class DeskViewAgent
     public string LastClipboardIn;               // last clipboard text received (tests)
     public volatile string PeerName = "";        // the other computer's name, as it told us over the link
     public volatile string OccupiedScreens;      // the other computer's screens that hold windows ("2,4"; null = never told)
+    public volatile int ScreenCount;             // how many screens the other computer shares (0 = not told yet)
 
     string edgeIn;                               // side the pointer came in from while the other machine drives it (null = not)
     string lastClip;                             // last text synced either way: never echo it back
@@ -562,6 +563,7 @@ public class DeskViewAgent
                 case "R": MoveBy(int.Parse(p[1]), int.Parse(p[2])); break;
                 case "X": if (edgeIn != null) { edgeIn = null; ReleaseAll(); } break;   // the other machine took its pointer back
                 case "N": if (p.Length > 1) PeerName = System.Text.RegularExpressions.Regex.Replace(p[1], @"[^\w\-.]", ""); break;
+                case "Q": { int c; if (p.Length > 1 && int.TryParse(p[1], out c) && c >= 1 && c <= 10) ScreenCount = c; break; }
                 case "O": OccupiedScreens = p.Length > 1 && System.Text.RegularExpressions.Regex.IsMatch(p[1], @"^[0-9,]{0,40}$") ? p[1] : ""; break;
                 case "CB": clipIn = new StringBuilder(); break;
                 case "CD":
@@ -937,6 +939,9 @@ public class DeskViewForwarder
 
     /// <summary>Tells the other computer which of this computer's screens hold windows (e.g. "2,4").</summary>
     public void ReportOccupied(string screens) { Enqueue("O " + (string.IsNullOrEmpty(screens) ? "-" : screens)); }
+
+    /// <summary>Tells the other computer how many screens this computer shares.</summary>
+    public void ReportScreenCount(int count) { Enqueue("Q " + count); }
 
     void OnAgentMessage(string msg)
     {

@@ -57,6 +57,8 @@ namespace DeskView
             }
         }
         public string AgentClient { get { return agent.Client; } }
+        /// <summary>How many screens the other computer shares (it tells us; 4 until it has).</summary>
+        public int RemoteScreenCount { get { return agent.ScreenCount > 0 ? agent.ScreenCount : 4; } }
         public bool ForwarderConnected { get { return forwarder.Connected; } }
         public string ForwarderStatus { get { return forwarder.Status; } }
 
@@ -244,6 +246,16 @@ namespace DeskView
         /// <summary>Server: monitor shows the other computer's screen n (0 = its own desktop again).</summary>
         public void SetScreen(string monitor, int n)
         {
+            // the user gave a monitor back: smart screens must not take it again until that screen empties first
+            int was;
+            if (n <= 0 && S.Screens.TryGetValue(monitor, out was)) userReleased.Add(was);
+            if (n > 0) userReleased.Remove(n);
+            autoShown.Remove(monitor);
+            ApplyScreen(monitor, n);
+        }
+
+        void ApplyScreen(string monitor, int n)
+        {
             if (n > 0) foreach (var k in S.Screens.Where(kv => kv.Value == n).Select(kv => kv.Key).ToList()) S.Screens.Remove(k);   // one stream, one monitor
             if (n <= 0) S.Screens.Remove(monitor); else { S.Screens[monitor] = n; LastOn = monitor; }
             S.Save(); SyncPlayers();
@@ -256,7 +268,7 @@ namespace DeskView
             if (S.Role == Role.Server && m.Success) { var name = ResolveMonitor(m.Groups[1].Value); if (name != null) SetScreen(name, int.Parse(m.Groups[2].Value)); return; }
             if (string.IsNullOrEmpty(want) || want.Equals("off", StringComparison.OrdinalIgnoreCase))
             {
-                if (S.Role == Role.Server) S.Screens.Clear(); else S.ClientView = 0;
+                if (S.Role == Role.Server) { foreach (var v in S.Screens.Values) userReleased.Add(v); S.Screens.Clear(); autoShown.Clear(); } else S.ClientView = 0;
                 S.Save(); SyncPlayers(); OnNotice(S.Role == Role.Server ? "Other computer's screens off" : "Back to this computer", false); return;
             }
             int n;
@@ -326,6 +338,8 @@ namespace DeskView
         string lastOccupied = null; DateTime lastOccupiedSent = DateTime.MinValue, lastOccupiedCheck = DateTime.MinValue;
         readonly Dictionary<string, int> autoShown = new Dictionary<string, int>();        // monitor -> screen shown by smart screens
         readonly Dictionary<string, DateTime> emptySince = new Dictionary<string, DateTime>();
+        readonly HashSet<int> userReleased = new HashSet<int>();   // screens the user gave back while they held windows
+        string lastBusyLogged = null;
 
         /// <summary>Client: tell the server which extra screens (2, 3, ...) hold windows, when that changes.</summary>
         void ReportOccupied()
@@ -338,6 +352,7 @@ namespace DeskView
             if (list != lastOccupied || (DateTime.Now - lastOccupiedSent).TotalSeconds > 5)
             {
                 lastOccupied = list; lastOccupiedSent = DateTime.Now;
+                forwarder.ReportScreenCount(screens.Length);
                 forwarder.ReportOccupied(list);
             }
         }
@@ -350,14 +365,16 @@ namespace DeskView
             var occ = agent.OccupiedScreens;
             if (occ == null) return;
             var busy = new HashSet<int>(occ.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => { int n; return int.TryParse(x, out n) ? n : 0; }).Where(n => n >= 2));
+            if (occ != lastBusyLogged) { lastBusyLogged = occ; Log.Write("other computer's screens with windows: " + (occ.Length > 0 ? occ : "none")); }
+            userReleased.RemoveWhere(n => !busy.Contains(n));   // emptied since the user gave it back: smart again
             var monitors = Tools.OrderedScreens().Select(Tools.Short).ToList();
             foreach (var k in autoShown.Keys.ToList()) { int cur; if (!S.Screens.TryGetValue(k, out cur) || cur != autoShown[k]) autoShown.Remove(k); }   // the user changed it: theirs now
             foreach (var n in busy)
             {
-                if (S.Screens.ContainsValue(n) || n - 2 >= monitors.Count) continue;   // already on a monitor / no monitor for it
+                if (S.Screens.ContainsValue(n) || n - 2 >= monitors.Count || userReleased.Contains(n)) continue;   // shown / no monitor / the user gave it back
                 var mon = monitors[n - 2];
                 if (S.Screens.ContainsKey(mon)) continue;                              // that monitor shows something the user chose
-                SetScreen(mon, n); autoShown[mon] = n; emptySince.Remove(mon);
+                ApplyScreen(mon, n); autoShown[mon] = n; emptySince.Remove(mon);
                 var who = string.IsNullOrEmpty(S.RemoteName) ? "The other computer's" : S.RemoteName + "'s";
                 OnNotice(string.Format("{0} screen {1} is now on monitor {2} (a window went there)", who, n, n - 1), false);
             }
@@ -368,7 +385,7 @@ namespace DeskView
                 if (!emptySince.TryGetValue(kv.Key, out t)) { emptySince[kv.Key] = DateTime.Now; continue; }
                 if ((DateTime.Now - t).TotalSeconds < 3) continue;
                 emptySince.Remove(kv.Key); autoShown.Remove(kv.Key);
-                SetScreen(kv.Key, 0);   // empty for 3 s: the monitor is this computer's again
+                ApplyScreen(kv.Key, 0);   // empty for 3 s: the monitor is this computer's again
             }
         }
 
