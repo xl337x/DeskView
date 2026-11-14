@@ -39,6 +39,9 @@ namespace DeskView
             S = settings;
             Media = new Media(S);
             Media.Notice += (m, w) => OnNotice(m, w);
+            // a picture of the other computer's screen stopped: it restarts that screen's listener at once (whichever way
+            // the link runs: the server answers through its agent, the client through its forwarder)
+            Media.ViewerGone += n => { if (S.Role == Role.Server) agent.RequestSenderRestart(n); else forwarder.RequestSenderRestart(n); };
         }
 
         // ------------------------------------------------------------------------------------------------- state
@@ -595,6 +598,9 @@ namespace DeskView
                 ServiceToast();
                 ReportOccupied();
                 ServiceSmartScreens();
+                int restart;
+                while (agent.SenderRestarts.TryDequeue(out restart)) { Log.Write("screen " + restart + ": its viewer went away - fresh listener"); Media.RestartSender(restart); }
+                while (forwarder.SenderRestarts.TryDequeue(out restart)) { Log.Write("screen " + restart + ": its viewer went away - fresh listener"); Media.RestartSender(restart); }
                 var req = agent.TakeRequestedMonitor();
                 if (req != null) SetAgentScreen(req);
                 Media.ServiceSenders();

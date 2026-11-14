@@ -309,6 +309,10 @@ public class DeskViewAgent
     public volatile string PeerName = "";        // the other computer's name, as it told us over the link
     public volatile string OccupiedScreens;      // the other computer's screens that hold windows ("2,4"; null = never told)
     public volatile int ScreenCount;             // how many screens the other computer shares (0 = not told yet)
+    /// <summary>Screens of this computer whose viewer went away: restart their listeners (the app takes them).</summary>
+    public readonly ConcurrentQueue<int> SenderRestarts = new ConcurrentQueue<int>();
+    /// <summary>This computer's picture of the other computer's screen n stopped: it should restart that listener.</summary>
+    public void RequestSenderRestart(int n) { Send("RS " + n); }
 
     string edgeIn;                               // side the pointer came in from while the other machine drives it (null = not)
     string lastClip;                             // last text synced either way: never echo it back
@@ -628,6 +632,7 @@ public class DeskViewAgent
                     break;
                 }
                 case "U": ReleaseAll(); break;                         // the viewer stopped sending input: let go of everything
+                case "RS": { int n; if (p.Length > 1 && int.TryParse(p[1], out n) && n >= 1 && n <= 10) SenderRestarts.Enqueue(n); break; }
                 case "CQ": SendClipboardIfChanged(); break;            // the viewer's keyboard came back to it: our clipboard goes along
                 case "P": Send("P"); break;                            // keep-alive, answered so a dead link is noticed
             }
@@ -1045,6 +1050,12 @@ public class DeskViewForwarder
     /// <summary>Tells the other computer how many screens this computer shares.</summary>
     public void ReportScreenCount(int count) { Enqueue("Q " + count); }
 
+    /// <summary>This computer's picture of the other computer's screen n stopped: it should restart that listener
+    /// (an agent that doesn't know "RS" ignores it).</summary>
+    public void RequestSenderRestart(int n) { Enqueue("RS " + n); }
+    /// <summary>Screens of this computer whose viewer went away: restart their listeners (the app takes them).</summary>
+    public readonly ConcurrentQueue<int> SenderRestarts = new ConcurrentQueue<int>();
+
     void OnAgentMessage(string msg)
     {
         if (!msg.StartsWith("<")) throw new InvalidDataException("not from the agent");
@@ -1053,6 +1064,7 @@ public class DeskViewForwarder
         switch (p[0])
         {
             case "V": int v; if (p.Length > 1 && int.TryParse(p[1], out v)) agentVersion = v; break;
+            case "RS": int rs; if (p.Length > 1 && int.TryParse(p[1], out rs) && rs >= 1 && rs <= 10) SenderRestarts.Enqueue(rs); break;
             case "P": break;
             case "L": int a; if (p.Length > 1 && int.TryParse(p[1], out a)) ComeBack(Math.Max(0, Math.Min(65535, a))); break;
             case "CB": clipIn = new StringBuilder(); break;

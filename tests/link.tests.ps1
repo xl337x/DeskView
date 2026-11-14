@@ -93,6 +93,11 @@ try {
     $io.Clip = 'agent clipboard on request'
     Send 'CQ'; $cq = @(Recv; Recv; Recv)
     Check 'asked for its clipboard, the agent sends it' ($cq[0] -eq '<CB' -and [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cq[1].Substring(4))) -eq $io.Clip) ($cq -join ' | ')
+    Send 'RS 3'; Send 'RS 99'; Send 'RS x'; Start-Sleep -Milliseconds 150
+    $q = 0; $got = @(); while ($agent.SenderRestarts.TryDequeue([ref]$q)) { $got += $q }
+    Check 'the viewer asks for a fresh listener for its screen ("RS"), nonsense is ignored' (($got -join ',') -eq '3') ($got -join ',')
+    $agent.RequestSenderRestart(2); $rs = Recv
+    Check 'and the agent can ask the viewer the same (server viewing the laptop)' ($rs -eq '<RS 2') $rs
     Send 'U'; Start-Sleep -Milliseconds 100
     Check '"U" (the viewer stopped forwarding) is understood' ($agent.Client -ne '')
 

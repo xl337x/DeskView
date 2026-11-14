@@ -207,12 +207,26 @@ namespace DeskView
             foreach (var n in Senders.Keys.Where(k => !wanted.Contains(k)).ToList()) { Kill(Senders[n].P); Senders.Remove(n); }
         }
 
+        /// <summary>The viewer of screen n went away (the other computer said so): a listener still holding on to that
+        /// vanished viewer would turn the next one away for ~5 s, so a fresh one is started at once.</summary>
+        public void RestartSender(int n)
+        {
+            Sender st;
+            if (!Senders.TryGetValue(n, out st) || st.P == null) return;
+            Kill(st.P); st.P = null; st.Fails = 0; st.RetryAt = null;
+        }
+
+        /// <summary>A picture of the other computer's screen n stopped (closed, or its player died): the other computer
+        /// should restart that screen's listener.</summary>
+        public event Action<int> ViewerGone;
+        void OnViewerGone(Player pl) { if (!pl.EverLive) return; var h = ViewerGone; if (h != null) h(pl.RemoteN); }
+
         // -------------------------------------------------------------------------------------------------- players
         public void StopPlayers() { foreach (var p in Players.Values) StopPlayer(p); Players.Clear(); }
         public void StopPlayer(Player p)
         {
             // the player first, then the window holding its picture (never destroy a window that still has its child)
-            if (p.P != null) { Kill(p.P); try { p.P.WaitForExit(500); } catch { } }
+            if (p.P != null) { Kill(p.P); try { p.P.WaitForExit(500); } catch { } OnViewerGone(p); }
             p.P = null;
             if (p.Host != null) { p.Host.Release(); p.Host.Close(); p.Host = null; }
         }
@@ -252,14 +266,15 @@ namespace DeskView
             if (ffplay == null || string.IsNullOrEmpty(peer)) return;
             string prof = Profile; var r = pl.Screen.Bounds;
             int port = S.VideoPort + pl.RemoteN - 1;
-            // An old DeskView streams one screen unencrypted: after two failed encrypted attempts, alternate.
-            pl.Legacy = pl.Fails >= 2 && pl.Fails % 2 == 1;
+            // An old DeskView streams one screen unencrypted: after two failed encrypted attempts, alternate - but
+            // never once this screen has shown a picture (then it is a dropped connection, not an old DeskView).
+            pl.Legacy = !pl.EverLive && pl.Fails >= 2 && pl.Fails % 2 == 1;
             string enc = pl.Legacy ? "" : "&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             string url = "srt://" + Tools.Host(peer) + ":" + port + "?mode=caller&latency=" + (LatencyMs[prof] * 1000) + "&transtype=live&connect_timeout=3000" + enc;
             string vf = S.Picture == "Stretch" ? "-vf scale=" + r.Width + ":" + r.Height + " " : "";
             // a stream that stops sending (the other computer asleep, network gone) ends the player after 4 s instead of
-            // leaving a frozen picture: the restart below takes over
-            url += "&timeout=4000000";
+            // leaving a frozen picture (3 s): the restart below takes over
+            url += "&timeout=3000000";
             try { File.Delete(pl.Report); } catch { }
             var env = new Dictionary<string, string>
             {
@@ -267,7 +282,7 @@ namespace DeskView
                 { "FFREPORT", "file=" + pl.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" },
             };
             // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
-            string probe = pl.Legacy || pl.Fails >= 2 ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
+            string probe = pl.Legacy || (pl.Fails >= 2 && !pl.EverLive) ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
             // Not "-fflags nobuffer": it drops the packets read while finding the picture size - the first key frame -
             // so the picture only appeared at the next one (measured: 3.3 s -> 1.0 s to the first picture).
             // No "-hwaccel d3d11va": this player's renderer can't use it (decoding stayed on the CPU anyway) and it
@@ -294,6 +309,14 @@ namespace DeskView
         {
             if (pl.P == null || pl.P.HasExited)
             {
+                if (pl.P != null)
+                {
+                    int code = -1; try { code = pl.P.ExitCode; } catch { }
+                    Log.Write(string.Format("{0}: player ended (exit {1}, {2}) - starting it again", pl.Key, code, pl.RemoteRes == null ? "no picture yet" : "picture was on"));
+                    // 0: the stream ended (the other side is already starting over); anything else: the player died
+                    // and the other side may still be waiting for it
+                    if (code != 0) OnViewerGone(pl);
+                }
                 if (pl.P != null && pl.RemoteRes == null)
                 {
                     pl.Fails++;
@@ -302,7 +325,9 @@ namespace DeskView
                 }
                 pl.P = null; pl.RemoteRes = null;
                 if (pl.Host != null) pl.Host.Release();
-                if ((DateTime.Now - pl.LastStart).TotalSeconds >= 2) StartPlayer(pl, peer);
+                // again soon (the other side is usually back within a second), then less often
+                double wait = pl.Fails <= 1 ? 0.5 : pl.Fails == 2 ? 1 : 2;
+                if ((DateTime.Now - pl.LastStart).TotalSeconds >= wait) StartPlayer(pl, peer);
                 return false;
             }
             bool changed = false;
@@ -326,7 +351,8 @@ namespace DeskView
             else if (pl.Host != null && pl.AdoptFails < 2 && !pl.Host.Holding)
             {
                 // the picture window is gone or the player hangs: start it again
-                Kill(pl.P); pl.P = null; pl.RemoteRes = null; pl.Host.Release(); return true;
+                Log.Write(pl.Key + ": picture window gone or not responding - restarting the player");
+                Kill(pl.P); OnViewerGone(pl); pl.P = null; pl.RemoteRes = null; pl.Host.Release(); return true;
             }
             if (pl.RemoteRes == null)
             {
@@ -341,6 +367,7 @@ namespace DeskView
                 else if ((DateTime.Now - pl.LastStart).TotalSeconds > 12)
                 {
                     // connected (or still trying) but no picture for 12 s: count it as a failed attempt and try again
+                    Log.Write(pl.Key + ": no picture after 12 s (" + (File.Exists(pl.Report) ? new FileInfo(pl.Report).Length + " bytes of report" : "no report") + ") - trying again");
                     pl.Fails++; Kill(pl.P); pl.P = null; if (pl.Host != null) pl.Host.Release(); return true;
                 }
             }
