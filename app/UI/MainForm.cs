@@ -146,7 +146,7 @@ namespace DeskView.UI
             var page = Theme.PageBody("What you can do", "Step by step: every DeskView feature and exactly how to use it.");
             page.Controls.Add(How("Move any window from any laptop to any screen",
                 string.Format("One desktop across both computers: a window that lives on {0} can be dragged onto any monitor that shows {0}, and {1}'s own windows onto any of its own screens.", other, me),
-                string.Format("Screens page: click a monitor and pick which of {0}'s screens it shows (each of {0}'s screens can be on a different monitor).", other),
+                string.Format("Screens page: click a monitor and pick one of {0}'s EXTRA screens (2, 3, 4...) - screen 1 is {0}'s own display, so it only mirrors it. No extra screens yet? See More screens on a laptop.", other),
                 string.Format("Move the mouse onto that monitor - the mouse is now on {0}.", other),
                 string.Format("Grab the window's title bar (for example a PowerShell tab on {0}) and drag it to another monitor showing {0}: it moves there like on a normal multi-monitor PC.", other),
                 string.Format("Want more places for {0}'s windows? Give the laptop extra virtual screens (Screens page > More screens on a laptop), then show each one on a monitor.", other),
