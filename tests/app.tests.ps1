@@ -150,5 +150,40 @@ if ($ffplay) {
     $mLive.StopPlayers()
     Check 'stopping it closes the player and the window holding it' ($plL.P -eq $null -and $plL.Host -eq $null)
 }
+# ---------------------------------------------------------------------------------------------- smart screens' decisions
+# Driven directly (no video, no guide windows): what the laptop reports -> which monitors show its screens.
+$mons = @([System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.X }, { $_.Bounds.Y } | % { $_.DeviceName -replace '^\\\\\.\\', '' })
+if ($mons.Count -ge 3) {
+    $smartHome = Join-Path $env:TEMP "dv-smart-$PID"; New-Item -ItemType Directory -Force $smartHome | Out-Null
+    $oldHome = $env:DESKVIEW_HOME; $env:DESKVIEW_HOME = $smartHome; $oldNoMedia = $env:DESKVIEW_NOMEDIA; $env:DESKVIEW_NOMEDIA = '1'
+    function NewSmartEngine {
+        $st = $Settings::Load(); $st.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Server'); $st.SmartScreens = $true; $st.ShowGuide = $false; $st.PairCode = 'K7MPQ3XR'
+        [Activator]::CreateInstance((& $T 'DeskView.Engine'), @($st))
+    }
+    $eng = NewSmartEngine
+    $agentF = (& $T 'DeskView.Engine').GetField('agent', $bf); $svc = (& $T 'DeskView.Engine').GetMethod('ServiceSmartScreens', $bf)
+    function Laptop($eng, $client, $occ) { $a = $agentF.GetValue($eng); $a.Client = $client; $a.OccupiedScreens = $occ }
+    function Run($eng, $seconds) { $end = (Get-Date).AddSeconds($seconds); do { [void]$svc.Invoke($eng, @()); Start-Sleep -Milliseconds 200 } while ((Get-Date) -lt $end) }
+    $S = { param($e) (& $T 'DeskView.Engine').GetField('S', $bf).GetValue($e) }
+    function Shown($eng) { $sc = (& $S $eng).Screens; ($mons | % { if ($sc.ContainsKey($_)) { "$_=$($sc[$_])" } }) -join ' ' }
+
+    Laptop $eng '10.0.0.2' '3,4'; Run $eng 0.5
+    Check 'smart screens: windows on the laptop''s screens 3 and 4 show on monitors 2 and 3' ((Shown $eng) -eq "$($mons[1])=3 $($mons[2])=4") (Shown $eng)
+    $eng.SetScreen($mons[1], 0); Run $eng 0.5
+    Check 'smart screens: a monitor the user gives back is not taken again while its screen holds windows' ((Shown $eng) -eq "$($mons[2])=4") (Shown $eng)
+    Laptop $eng '' ''; Run $eng 4
+    Check 'smart screens: the laptop gone - the monitor it showed by itself is given back after its grace time' ((Shown $eng) -eq '') (Shown $eng)
+    Laptop $eng '10.0.0.2' '3,4'; Run $eng 0.5
+    Check 'smart screens: the laptop back - its windows show again, but the given-back monitor stays given back' ((Shown $eng) -eq "$($mons[2])=4") (Shown $eng)
+    $eng2 = NewSmartEngine; Laptop $eng2 '10.0.0.2' '3,4'; Run $eng2 0.5
+    Check 'smart screens: DeskView restarted - it still remembers what the user gave back' ((Shown $eng2) -eq "$($mons[2])=4") (Shown $eng2)
+    Laptop $eng2 '10.0.0.2' '4'; Run $eng2 2
+    Laptop $eng2 '10.0.0.2' '3,4'; Run $eng2 0.5
+    Check 'smart screens: a short gap is not "emptied" (the give-back still holds)' ((Shown $eng2) -eq "$($mons[2])=4") (Shown $eng2)
+    Laptop $eng2 '10.0.0.2' '4'; Run $eng2 5.5
+    Laptop $eng2 '10.0.0.2' '3,4'; Run $eng2 0.5
+    Check 'smart screens: once that screen really emptied (5 s), a window there shows by itself again' ((Shown $eng2) -eq "$($mons[1])=3 $($mons[2])=4") (Shown $eng2)
+    $env:DESKVIEW_HOME = $oldHome; $env:DESKVIEW_NOMEDIA = $oldNoMedia; try { [IO.Directory]::Delete($smartHome, $true) } catch { }
+}
 "== app: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

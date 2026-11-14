@@ -354,7 +354,8 @@ namespace DeskView
         readonly Dictionary<string, int> autoShown = new Dictionary<string, int>();        // monitor -> screen shown by smart screens
         readonly Dictionary<string, DateTime> emptySince = new Dictionary<string, DateTime>();
         readonly HashSet<int> userReleased = new HashSet<int>();
-        readonly Dictionary<int, DateTime> smartFailed = new Dictionary<int, DateTime>();   // screens smart screens showed whose picture never came   // screens the user gave back while they held windows
+        readonly Dictionary<int, DateTime> smartFailed = new Dictionary<int, DateTime>();
+        readonly Dictionary<int, DateTime> releasedEmptySince = new Dictionary<int, DateTime>();   // screens smart screens showed whose picture never came   // screens the user gave back while they held windows
         string lastBusyLogged = null;
 
         /// <summary>Client: tell the server which extra screens (2, 3, ...) hold windows, when that changes.</summary>
@@ -401,7 +402,16 @@ namespace DeskView
             int releasedBefore = userReleased.Count;
             var busy = new HashSet<int>(occ.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => { int n; return int.TryParse(x, out n) ? n : 0; }).Where(n => n >= 2));
             if (occ != lastBusyLogged) { lastBusyLogged = occ; Log.Write("other computer's screens with windows: " + (occ.Length > 0 ? occ : "none")); }
-            userReleased.RemoveWhere(n => !busy.Contains(n));   // emptied since the user gave it back: smart again
+            // A screen the user gave back is smart again once it has really emptied: reported empty by the connected
+            // laptop for 5 s. A dropped link (laptop restarting, asleep) or a brief gap is not that.
+            bool linked = !string.IsNullOrEmpty(agent.Client);
+            foreach (var n in userReleased.ToList())
+            {
+                DateTime since;
+                if (!linked || busy.Contains(n)) { releasedEmptySince.Remove(n); continue; }
+                if (!releasedEmptySince.TryGetValue(n, out since)) { releasedEmptySince[n] = DateTime.Now; continue; }
+                if ((DateTime.Now - since).TotalSeconds >= 5) { userReleased.Remove(n); releasedEmptySince.Remove(n); }
+            }
             foreach (var n in smartFailed.Keys.Where(k => !busy.Contains(k)).ToList()) smartFailed.Remove(n);
             var monitors = Tools.OrderedScreens().Select(Tools.Short).ToList();
             foreach (var k in autoShown.Keys.ToList()) { int cur; if (!S.Screens.TryGetValue(k, out cur) || cur != autoShown[k]) autoShown.Remove(k); }   // the user changed it: theirs now
