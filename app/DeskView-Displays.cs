@@ -52,6 +52,41 @@ public static class DeskViewDisplays
         return l;
     }
 
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+    [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+
+    /// <summary>Which of these screen rectangles hold at least one ordinary, visible window of another program
+    /// (its centre on that screen): the screens the user has put something on.</summary>
+    public static bool[] ScreensWithWindows(System.Drawing.Rectangle[] screens)
+    {
+        SetThreadDpiAwarenessContext(new IntPtr(-4));
+        var has = new bool[screens.Length];
+        uint me = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+        EnumWindows((h, l) =>
+        {
+            if (!IsWindowVisible(h) || IsIconic(h) || GetWindowTextLength(h) == 0) return true;
+            int ex = GetWindowLong(h, -20);
+            if ((ex & 0x80) != 0 || (ex & 0x08000000) != 0) return true;       // tool windows, no-activate overlays
+            if (GetWindow(h, 4) != IntPtr.Zero) return true;                     // owned popups follow their owner
+            int cloaked; if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) return true;   // other virtual desktops, hidden UWP
+            uint pid; GetWindowThreadProcessId(h, out pid); if (pid == me) return true;
+            RECT r; if (!GetWindowRect(h, out r)) return true;
+            int cx = (r.L + r.R) / 2, cy = (r.T + r.B) / 2;
+            for (int i = 0; i < screens.Length; i++) if (screens[i].Contains(cx, cy)) { has[i] = true; break; }
+            return true;
+        }, IntPtr.Zero);
+        return has;
+    }
+
     /// <summary>Names (\\.\DISPLAYn) of the virtual screens that are part of the desktop.</summary>
     public static string[] VirtualScreens()
     {

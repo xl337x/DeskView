@@ -235,6 +235,10 @@ namespace DeskView.UI
             c.Controls.Add(Theme.Row("Picture", pic));
             c.Controls.Add(Theme.Row("Quality", q));
             if (S.Role == Role.Server) c.Controls.Add(inter);
+            if (S.Role == Role.Server) c.Controls.Add(Theme.Check("Smart screens: a monitor shows the other computer's extra screen by itself when you drag a window onto it (screen 2 -> monitor 1, 3 -> 2, ...)",
+                S.SmartScreens, v => { S.SmartScreens = v; S.Save(); }));
+            if (S.Role == Role.Server) c.Controls.Add(Theme.Check("Guide: a bar on monitors showing the other computer (with ways back), and a short message when the mouse moves over",
+                S.ShowGuide, v => { S.ShowGuide = v; S.Save(); engine.SyncPlayers(); }));
             c.Controls.Add(Theme.Button("Save and apply", (o, e) =>
             {
                 S.Picture = pic.SelectedIndex == 1 ? "Stretch" : "Fit";
