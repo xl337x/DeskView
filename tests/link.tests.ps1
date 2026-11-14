@@ -85,7 +85,15 @@ try {
     Check 'touching the right edge switches to the other machine' ($fw.TryEnter(1919, 300) -and $fw.RemoteOwned)
     Check 'the other machine gets the pointer at the matching height' (WaitFor { $agent.Switches -gt $sw -and $io.X -eq 1 }) "$($io.X),$($io.Y)"
     $enq = [DeskViewForwarder].GetMethod('Enqueue', [Reflection.BindingFlags]'NonPublic,Instance')
-    $t = Measure-Command { [void]$enq.Invoke($fw, @('R -20 0')); [void](WaitFor { -not $fw.RemoteOwned } 2000) }
+    # moves queued before the switch were measured from the old position: dropped, not a jump across the screen
+    $mon = [Windows.Forms.Screen]::FromPoint((New-Object Drawing.Point 1919, 300)).Bounds
+    $px = $mon.Left + [int]($mon.Width / 2); $py = $mon.Top + [int]($mon.Height / 2)
+    $x0 = $io.X
+    $fw.MoveFromParked($px + 900, $py); Start-Sleep -Milliseconds 200
+    Check 'a stale pre-switch move is dropped (no jump on the other machine)' ($io.X -eq $x0 -and $fw.StaleMoves -ge 1) "x $x0 -> $($io.X), dropped $($fw.StaleMoves)"
+    $fw.MoveFromParked($px + 25, $py + 10); [void](WaitFor { $io.X -ne $x0 })
+    Check 'a real move after the switch moves the other pointer by exactly that much' ($io.X -eq $x0 + 25) "x $x0 -> $($io.X)"
+    $t = Measure-Command { [void]$enq.Invoke($fw, @('R -60 0')); [void](WaitFor { -not $fw.RemoteOwned } 2000) }
     Check ('moving back across the edge returns the pointer here ({0:N0} ms round trip)' -f $t.TotalMilliseconds) (-not $fw.RemoteOwned)
     [void]$fw.TryEnter(1919, 300); [void](WaitFor { $agent.Switches -gt $sw + 2 })
     $fw.TakeBack()
