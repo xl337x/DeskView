@@ -1,4 +1,4 @@
-# Tests for the DeskView app's logic: compiles and loads app\**\*.cs exactly like DeskView.ps1 does for users, and checks its building blocks
+﻿# Tests for the DeskView app's logic: compiles and loads app\**\*.cs exactly like DeskView.ps1 does for users, and checks its building blocks
 # without starting the app. Build it first: gui\build.ps1
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Web.Extensions
@@ -103,6 +103,28 @@ $expH = [int][math]::Round(1080 * [math]::Min($b.Width / 2560.0, $b.Height / 108
 Check "fit: an ultrawide picture is letterboxed on this monitor ($($r.Width)x$($r.Height))" ($r.Width -eq $b.Width -and [math]::Abs($r.Height - $expH) -le 1 -and $r.Y -gt $b.Y)
 $sFit.Picture = 'Stretch'
 Check 'stretch: the picture fills the monitor' ($media.PictureRect($pl) -eq $b)
+
+# ---------------------------------------------------------------------------------------------- the picture is in front
+# Windows ignores "always on top" for a player started in the background, so its picture could end up behind this
+# computer's windows. Started exactly like the app starts players, it must end up inside a window that is on top.
+$ffplay = (& $T 'DeskView.Tools')::Find('ffplay')
+if ($ffplay) {
+    $start = (& $T 'DeskView.Media').GetMethod('Start', $bf)
+    $box = New-Object System.Drawing.Rectangle ($b.Right - 340), ($b.Bottom - 300), 320, 240
+    $p = $start.Invoke($null, @($ffplay, "-hide_banner -loglevel error -noborder -left $($box.X) -top $($box.Y) -x 320 -y 240 -window_title DVQA-PICTURE -f lavfi -i testsrc=size=320x240:rate=30", $null))
+    $w = [IntPtr]::Zero; for ($i = 0; $i -lt 100 -and $w -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 50; $w = [DeskViewPortal]::FindVisibleWindow($p.Id, 'DVQA-PICTURE') }
+    $pictureHost = New-Object DeskViewPictureHost $box
+    $pictureHost.Adopt($w)
+    for ($i = 0; $i -lt 10; $i++) { Start-Sleep -Milliseconds 100; [System.Windows.Forms.Application]::DoEvents() }
+    $bmp = New-Object System.Drawing.Bitmap 320, 240; [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($box.X, $box.Y, 0, 0, $bmp.Size)
+    $colours = @{}; for ($x = 5; $x -lt 320; $x += 20) { $c = $bmp.GetPixel($x, 60); $colours["$($c.R),$($c.G),$($c.B)"] = 1 }
+    Check 'the picture is held by a window that is always on top' ($w -ne [IntPtr]::Zero -and [DeskViewPortal]::IsTopmost($pictureHost.Handle) -and $pictureHost.Holding)
+    Check "the picture is what is on the screen there ($($colours.Count) colours of the test picture)" ($colours.Count -ge 6)
+    try { $p.Kill() } catch { }
+    for ($i = 0; $i -lt 20 -and $pictureHost.Holding; $i++) { Start-Sleep -Milliseconds 100 }
+    Check 'the host notices when the player is gone' (-not $pictureHost.Holding)
+    $pictureHost.Close()
+}
 
 "== app: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

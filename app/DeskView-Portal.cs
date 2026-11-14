@@ -388,3 +388,66 @@ public static class DeskViewPointer
         return SystemParametersInfo(SPI_SETMOUSEKEYS, mk.cbSize, ref mk, SPIF_UPDATE);
     }
 }
+/// <summary>Holds one player's picture on its monitor. Windows does not let a background program put another
+/// program's window "always on top" (the request is silently ignored), so the picture would end up behind this
+/// computer's own windows. This window is created on top and never takes focus; the player's window is moved inside it
+/// as a child, so the picture is always in front.</summary>
+public class DeskViewPictureHost : Form
+{
+    [DllImport("user32.dll")] static extern IntPtr SetParent(IntPtr child, IntPtr parent);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+    [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int i, int v);
+    [DllImport("user32.dll")] static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool repaint);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+
+    IntPtr child;
+
+    public DeskViewPictureHost(System.Drawing.Rectangle bounds)
+    {
+        FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
+        BackColor = System.Drawing.Color.Black; Bounds = bounds;
+    }
+
+    /// <summary>Takes the player's window in and shows the picture.</summary>
+    public void Adopt(IntPtr w)
+    {
+        const int GWL_STYLE = -16, WS_POPUP = unchecked((int)0x80000000), WS_CHILD = 0x40000000, WS_CAPTION = 0xC00000, WS_THICKFRAME = 0x40000;
+        int style = GetWindowLong(w, GWL_STYLE);
+        SetWindowLong(w, GWL_STYLE, (style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD);
+        SetParent(w, Handle);
+        child = w;
+        Fit();
+        if (!Visible) Show();
+    }
+
+    /// <summary>True while the picture is inside; keeps it filling the window (the player may move itself).</summary>
+    public bool Holding
+    {
+        get
+        {
+            if (child == IntPtr.Zero) return false;
+            if (!IsWindow(child) || GetParent(child) != Handle) { child = IntPtr.Zero; return false; }
+            Fit();
+            return true;
+        }
+    }
+
+    void Fit()
+    {
+        RECT r; var want = RectangleToScreen(ClientRectangle);
+        if (GetWindowRect(child, out r) && (r.L != want.Left || r.T != want.Top || r.R != want.Right || r.B != want.Bottom))
+            MoveWindow(child, 0, 0, ClientSize.Width, ClientSize.Height, true);
+    }
+
+    /// <summary>The player went away: stop covering the monitor until the next picture arrives.</summary>
+    public void Release() { child = IntPtr.Zero; if (Visible) Hide(); }
+
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x80 | 0x8; return cp; }   // NOACTIVATE | TOOLWINDOW | TOPMOST
+    }
+}
