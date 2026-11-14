@@ -30,6 +30,34 @@ public static class DeskViewDxgi
     {
         void SetPrivateData(); void SetPrivateDataInterface(); void GetPrivateData(); void GetParent();
         [PreserveSig] int EnumOutputs(uint index, out IDXGIOutput output);
+        [PreserveSig] int GetDesc(out DXGI_ADAPTER_DESC desc);
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DXGI_ADAPTER_DESC
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Description;
+        public uint VendorId, DeviceId, SubSysId, Revision;
+        public UIntPtr DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+        public long AdapterLuid;
+    }
+
+    /// <summary>The name of graphics adapter 0 (the one screen capture uses by default), e.g. "Intel(R) UHD Graphics".</summary>
+    public static string FirstAdapterName()
+    {
+        Guid iid = typeof(IDXGIFactory1).GUID;
+        IDXGIFactory1 factory;
+        if (CreateDXGIFactory1(ref iid, out factory) != 0) return null;
+        try
+        {
+            IDXGIAdapter adapter;
+            if (factory.EnumAdapters(0, out adapter) != 0) return null;
+            DXGI_ADAPTER_DESC d;
+            var name = adapter.GetDesc(out d) == 0 ? d.Description : null;
+            Marshal.ReleaseComObject(adapter);
+            return name;
+        }
+        finally { Marshal.ReleaseComObject(factory); }
     }
 
     [ComImport, Guid("ae02eedb-c735-4690-8d52-5a8dc20213aa"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
