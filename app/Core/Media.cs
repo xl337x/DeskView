@@ -70,7 +70,7 @@ namespace DeskView
     public class Player
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
-        public Size? RemoteRes; public string RemoteRect; public bool Passive; public IntPtr Window; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
+        public Size? RemoteRes; public string RemoteRect; public bool Passive; public DeskViewPictureHost Host; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
         public DateTime LastStart = DateTime.MinValue; public long ReportLen = -1; public DateTime ReportGrew = DateTime.Now;
         public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
@@ -190,8 +190,8 @@ namespace DeskView
         }
 
         // -------------------------------------------------------------------------------------------------- players
-        public void StopPlayers() { foreach (var p in Players.Values) Kill(p.P); Players.Clear(); }
-        public void StopPlayer(Player p) { Kill(p.P); p.P = null; }
+        public void StopPlayers() { foreach (var p in Players.Values) StopPlayer(p); Players.Clear(); }
+        public void StopPlayer(Player p) { Kill(p.P); p.P = null; if (p.Host != null) { p.Host.Close(); p.Host = null; } }
 
         public void SyncPlayers(IEnumerable<Tuple<string, Screen, int>> wanted, string peer)
         {
@@ -199,7 +199,7 @@ namespace DeskView
             foreach (var k in Players.Keys.ToList())
             {
                 var x = w.FirstOrDefault(t => t.Item1 == k);
-                if (x == null || x.Item3 != Players[k].RemoteN || x.Item2.Bounds != Players[k].Screen.Bounds) { Kill(Players[k].P); Players.Remove(k); }
+                if (x == null || x.Item3 != Players[k].RemoteN || x.Item2.Bounds != Players[k].Screen.Bounds) { StopPlayer(Players[k]); Players.Remove(k); }
             }
             foreach (var x in w)
                 if (!Players.ContainsKey(x.Item1))
@@ -212,6 +212,7 @@ namespace DeskView
         void StartPlayer(Player pl, string peer)
         {
             Kill(pl.P); pl.P = null;
+            if (pl.Host != null) pl.Host.Release();
             if (NoMedia) return;
             if (ffplay == null || string.IsNullOrEmpty(peer)) return;
             string prof = Profile; var r = pl.Screen.Bounds;
@@ -230,8 +231,8 @@ namespace DeskView
             };
             // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
             string probe = pl.Legacy || pl.Fails >= 2 ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
-            pl.P = Start(ffplay, "-hide_banner -loglevel error " + hw + "-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext " + probe + " -an -noborder -alwaysontop " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
-            pl.LastStart = DateTime.Now; pl.ReportLen = -1; pl.ReportGrew = DateTime.Now; pl.Passive = false; pl.Window = IntPtr.Zero; pl.RemoteRes = null;
+            pl.P = Start(ffplay, "-hide_banner -loglevel error " + hw + "-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
+            pl.LastStart = DateTime.Now; pl.ReportLen = -1; pl.ReportGrew = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
         }
 
         /// <summary>Keep players alive; returns true if what is shown changed (resolution / which screen).</summary>
@@ -249,27 +250,32 @@ namespace DeskView
                         if (pl.Fails == 3 && !pl.WarnedDown) { pl.WarnedDown = true; var n = Notice; if (n != null) n("No picture from " + S.RemoteName + " screen " + pl.RemoteN + " yet. Make sure DeskView is running there (same pairing code) and it is on the network.", true); }
                     }
                     pl.P = null;
+                    if (pl.Host != null) pl.Host.Release();
                     if ((DateTime.Now - pl.LastStart).TotalSeconds >= 2) StartPlayer(pl, peer);
                     continue;
                 }
                 if (!pl.Passive)
                 {
-                    // out of Alt+Tab, never takes focus (a stray Esc would close it), really on top. The picture window is
-                    // found by its title: ffplay's "main window" can be a hidden helper, and making that one topmost
-                    // left the picture behind other windows.
+                    // The picture goes inside a window of ours that is always in front and never takes focus (out of
+                    // Alt+Tab; a stray Esc can't close it). The player's window is found by its title: its "main
+                    // window" is a hidden helper.
                     var w = DeskViewPortal.FindVisibleWindow(pl.P.Id, "DeskView");
-                    if (w != IntPtr.Zero) { DeskViewPortal.MakePassive(w); pl.Window = w; pl.Passive = true; changed = true; }
+                    if (w != IntPtr.Zero)
+                    {
+                        if (pl.Host == null) pl.Host = new DeskViewPictureHost(pl.Screen.Bounds);
+                        pl.Host.Adopt(w); pl.Passive = true; changed = true;
+                    }
                 }
-                else if (pl.Window != IntPtr.Zero && !DeskViewPortal.IsTopmost(pl.Window))
+                else if (pl.Host != null && !pl.Host.Holding)
                 {
-                    DeskViewPortal.MakePassive(pl.Window);   // something took "on top" away: put the picture back in front
+                    pl.ReportGrew = DateTime.Now; Kill(pl.P); pl.P = null; pl.Host.Release(); continue;   // picture window gone: restart
                 }
                 long len = File.Exists(pl.Report) ? new FileInfo(pl.Report).Length : 0;
                 if (len != pl.ReportLen) { pl.ReportLen = len; pl.ReportGrew = DateTime.Now; }
                 else if (pl.RemoteRes != null && (DateTime.Now - pl.ReportGrew).TotalSeconds > 6)
                 {
                     // the picture froze (stream gone, ffplay keeps the last frame): reconnect
-                    pl.ReportGrew = DateTime.Now; Kill(pl.P); pl.P = null; continue;
+                    pl.ReportGrew = DateTime.Now; Kill(pl.P); pl.P = null; if (pl.Host != null) pl.Host.Release(); continue;
                 }
                 var info = ReadInfo(pl.Report);
                 if (info != null && (pl.RemoteRes != info.size || pl.RemoteRect != info.rect))
