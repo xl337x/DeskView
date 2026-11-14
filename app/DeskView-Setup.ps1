@@ -28,6 +28,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# nobody to ask: a service, a scheduled task, or powershell -NonInteractive (Read-Host would wait forever or fail)
+$canAsk = [Environment]::UserInteractive -and -not ([Environment]::GetCommandLineArgs() | ? { $_ -match '^-noni' })
 $installDir = if ($env:DESKVIEW_INSTALL) { $env:DESKVIEW_INSTALL } else { Join-Path $env:LOCALAPPDATA 'DeskView' }
 $settingsDir = if ($env:DESKVIEW_HOME) { $env:DESKVIEW_HOME } else { Join-Path $env:APPDATA 'DeskView' }
 $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'DeskView.lnk'
@@ -208,7 +210,7 @@ if (-not $Role) {
     $p = Join-Path $settingsDir 'app.json'
     if (Test-Path $p) { try { $r = (Get-Content $p -Raw | ConvertFrom-Json).Role; if ($r -eq 1) { $knownRole = 'Server' } elseif ($r -eq 2) { $knownRole = 'Client' } } catch { } }
     if ($knownRole) { $Role = $knownRole }
-    elseif (-not [Environment]::UserInteractive) { throw 'Pass -Role Server or -Role Client (no one to ask).' }
+    elseif (-not $canAsk) { throw 'Pass -Role Server or -Role Client (no one to ask).' }
     else {
         $isServerAnswer = (Read-Host '   Is this the computer whose keyboard and mouse you share (the SERVER)? [y/N]') -match '^[yY]'
         $Role = if ($isServerAnswer) { 'Server' } else { 'Client' }
@@ -230,7 +232,7 @@ if ($Role -eq 'Server') {
     if (-not $PairCode) { $PairCode = $known }
     while (-not $PairCode -or $PairCode.Trim().ToUpper() -notmatch $codePattern) {
         if ($PairCode) { Write-Host "   '$PairCode' is not a DeskView pairing code (8-12 letters/digits, as shown on the server)." -ForegroundColor Yellow }
-        if (-not [Environment]::UserInteractive) { throw 'Pass the pairing code with -PairCode (no one to ask).' }
+        if (-not $canAsk) { throw 'Pass the pairing code with -PairCode (no one to ask).' }
         $PairCode = Read-Host '   This computer is a CLIENT. Enter the pairing code shown on the server'
     }
 }

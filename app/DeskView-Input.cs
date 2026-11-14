@@ -305,6 +305,7 @@ public class DeskViewAgent
     public Action<string> WriteClipboard = DvClip.SetText;
     public int Switches;                         // times the pointer came over / went back (tests)
     public string LastClipboardIn;               // last clipboard text received (tests)
+    public volatile string PeerName = "";        // the other computer's name, as it told us over the link
 
     string edgeIn;                               // side the pointer came in from while the other machine drives it (null = not)
     string lastClip;                             // last text synced either way: never echo it back
@@ -559,6 +560,7 @@ public class DeskViewAgent
                 case "E": Enter(p[1], int.Parse(p[2])); break;
                 case "R": MoveBy(int.Parse(p[1]), int.Parse(p[2])); break;
                 case "X": if (edgeIn != null) { edgeIn = null; ReleaseAll(); } break;   // the other machine took its pointer back
+                case "N": if (p.Length > 1) PeerName = System.Text.RegularExpressions.Regex.Replace(p[1], @"[^\w\-.]", ""); break;
                 case "CB": clipIn = new StringBuilder(); break;
                 case "CD":
                     if (clipIn != null && p.Length > 1) { clipIn.Append(p[1]); if (clipIn.Length > MaxClipboardBytes / 3 * 4 + 8) clipIn = null; }
@@ -636,7 +638,7 @@ public class DeskViewAgent
 
 public class DeskViewForwarder
 {
-    public string Peer = "", Code = "", Monitor = "";
+    public string Peer = "", Code = "", Monitor = "", Name = Environment.MachineName;
     public int Port = 9002;
     public volatile int VidL, VidT, VidW = 1, VidH = 1;   // where the remote picture is on this machine (physical px)
     public volatile bool Active;                          // forward input only while viewing
@@ -763,6 +765,7 @@ public class DeskViewForwarder
                 string drained; while (queue.TryTake(out drained)) { }
                 ulong seq = 0;
                 Connected = true; Status = "connected to " + Peer + " (encrypted)";
+                if (!string.IsNullOrEmpty(Name)) DvProto.WriteFrame(s, keys, ++seq, "N " + Name.Replace(' ', '_'));   // who we are
                 if (!string.IsNullOrEmpty(Monitor)) DvProto.WriteFrame(s, keys, ++seq, "S " + Monitor);
                 // The agent's messages (pointer handed back, its clipboard) on their own thread: no added delay.
                 readerDead = false;
@@ -1015,6 +1018,135 @@ public class DeskViewForwarder
             }
         }
         return DvNative.CallNextHookEx(keyHook, code, w, l);
+    }
+}
+
+/// <summary>Finding the other computer on the local network without any other software: the client broadcasts
+/// a probe sealed with the pairing code (HMAC over a fresh nonce); only a server with the same code answers, and its
+/// answer proves it knows the code too, so nobody can pose as the server. UDP port 9010, local network only.</summary>
+public class DeskViewDiscovery
+{
+    public int Port = 9010;
+    public string Code = "";
+    public string Name = Environment.MachineName;
+    public volatile string Found;                 // client: the server's address once found (null until then)
+    public volatile string FoundName;
+    public volatile string Status = "idle";
+    public int Answered;
+    public bool Running { get { var t = thread; return t != null && t.IsAlive; } }                          // server: probes answered (tests)
+
+    UdpClient udp;
+    Thread thread;
+    volatile bool stopping;
+
+    static string Hex(byte[] b) { var sb = new StringBuilder(b.Length * 2); foreach (var x in b) sb.Append(x.ToString("x2")); return sb.ToString(); }
+    static byte[] Unhex(string s)
+    {
+        if (s == null || s.Length % 2 != 0 || s.Length > 128) return null;
+        var b = new byte[s.Length / 2];
+        for (int i = 0; i < b.Length; i++) { int v; if (!int.TryParse(s.Substring(i * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out v)) return null; b[i] = (byte)v; }
+        return b;
+    }
+
+    /// <summary>Server: answer probes that carry the right pairing code.</summary>
+    public void StartResponder()
+    {
+        Stop(); stopping = false;
+        udp = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
+        thread = new Thread(() =>
+        {
+            Status = "answering on UDP " + Port;
+            while (!stopping)
+            {
+                try
+                {
+                    var from = new IPEndPoint(IPAddress.Any, 0);
+                    var data = udp.Receive(ref from);
+                    var p = Encoding.ASCII.GetString(data, 0, Math.Min(data.Length, 300)).Split(' ');
+                    if (p.Length != 3 || p[0] != "DVD1") continue;
+                    var nonce = Unhex(p[1]); var mac = Unhex(p[2]);
+                    if (nonce == null || nonce.Length != 16 || mac == null) continue;
+                    var key = DvProto.PairKey(Code);
+                    if (!DvProto.SameBytes(mac, DvProto.Hmac(key, DvProto.Ascii("probe"), nonce))) continue;
+                    var safeName = System.Text.RegularExpressions.Regex.Replace(Name ?? "", @"[^\w\-.]", "");
+                    if (safeName.Length > 40) safeName = safeName.Substring(0, 40);
+                    var reply = "DVD1R " + safeName + " " + Hex(DvProto.Hmac(key, DvProto.Ascii("reply"), nonce, Encoding.UTF8.GetBytes(safeName)));
+                    var bytes = Encoding.ASCII.GetBytes(reply);
+                    udp.Send(bytes, bytes.Length, from);
+                    Interlocked.Increment(ref Answered);
+                }
+                catch { if (stopping) return; Thread.Sleep(100); }
+            }
+        }) { IsBackground = true, Name = "DeskViewDiscovery" };
+        thread.Start();
+    }
+
+    /// <summary>Client: keep asking (every 3 s) until a server with this pairing code answers.</summary>
+    public void StartSeeker(string[] targets)
+    {
+        Stop(); stopping = false; Found = null;
+        udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0)) { EnableBroadcast = true };
+        udp.Client.ReceiveTimeout = 1000;
+        thread = new Thread(() =>
+        {
+            var key = DvProto.PairKey(Code);
+            while (!stopping && Found == null)
+            {
+                try
+                {
+                    var nonce = DvProto.Random(16);
+                    var probe = Encoding.ASCII.GetBytes("DVD1 " + Hex(nonce) + " " + Hex(DvProto.Hmac(key, DvProto.Ascii("probe"), nonce)));
+                    foreach (var t in targets)
+                        try { udp.Send(probe, probe.Length, new IPEndPoint(IPAddress.Parse(t), Port)); } catch { }
+                    Status = "looking for the server on the local network";
+                    var end = DateTime.UtcNow.AddSeconds(3);
+                    while (!stopping && DateTime.UtcNow < end)
+                    {
+                        IPEndPoint from = new IPEndPoint(IPAddress.Any, 0); byte[] data;
+                        try { data = udp.Receive(ref from); } catch (SocketException) { continue; }
+                        var p = Encoding.ASCII.GetString(data, 0, Math.Min(data.Length, 300)).Split(' ');
+                        if (p.Length != 3 || p[0] != "DVD1R") continue;
+                        var mac = Unhex(p[2]);
+                        if (mac == null || !DvProto.SameBytes(mac, DvProto.Hmac(key, DvProto.Ascii("reply"), nonce, Encoding.UTF8.GetBytes(p[1])))) continue;
+                        FoundName = p[1]; Found = from.Address.ToString(); Status = "found " + p[1] + " at " + Found;
+                        return;
+                    }
+                }
+                catch { if (stopping) return; Thread.Sleep(500); }
+            }
+        }) { IsBackground = true, Name = "DeskViewDiscovery" };
+        thread.Start();
+    }
+
+    /// <summary>Where to send probes: the broadcast address of every local IPv4 network.</summary>
+    public static string[] BroadcastTargets()
+    {
+        var list = new List<string> { "255.255.255.255" };
+        try
+        {
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork || ua.IPv4Mask == null || IPAddress.IsLoopback(ua.Address)) continue;
+                    var a = ua.Address.GetAddressBytes(); var m = ua.IPv4Mask.GetAddressBytes(); var b = new byte[4];
+                    for (int i = 0; i < 4; i++) b[i] = (byte)(a[i] | ~m[i]);
+                    var s = new IPAddress(b).ToString();
+                    if (!list.Contains(s)) list.Add(s);
+                }
+            }
+        }
+        catch { }
+        return list.ToArray();
+    }
+
+    public void Stop()
+    {
+        stopping = true;
+        try { if (udp != null) udp.Close(); } catch { }
+        if (thread != null && thread != Thread.CurrentThread) thread.Join(1500);
+        thread = null; udp = null;
     }
 }
 

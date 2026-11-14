@@ -1,4 +1,4 @@
-﻿<#
+<#
   Drives the DeskView app's real windows: every page, button, checkbox, list and number box; the setup assistant;
   the tray menu. Runs the app's code in this process in test mode (own settings folder, no engine service calls,
   no video), so the real setup is never touched. Screenshots go to $env:TEMP\deskview-gui-qa.
@@ -64,6 +64,9 @@ function Settings { (New-Object Web.Script.Serialization.JavaScriptSerializer).D
 # ------------------------------------------------------------------------------------------------- setup assistant
 $SettingsType = T 'DeskView.AppSettings'; $EngineType = T 'DeskView.Engine'
 $s = [Activator]::CreateInstance($SettingsType); $s.VideoPort = 9100; $s.ControlPort = 9102; $s.ComputerName = 'QA-DESK'
+Check 'a new install uses DeskView''s built-in keyboard/mouse engine' ($s.InputEngine -eq 'DeskView')
+# the engine-settings checks below exercise the classic engine path (dry run: nothing is really started)
+$s.InputEngine = 'Classic'
 $engine = [Activator]::CreateInstance($EngineType, @($s))
 $wiz = [Activator]::CreateInstance((T 'DeskView.UI.SetupWizard'), @($engine))
 $wiz.Show(); Pump 300

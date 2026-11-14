@@ -118,8 +118,17 @@ namespace DeskView.UI
 
             // health checks don't need a live refresh
             Action<string, bool, string> Check = (what, ok, fix) => checks.Controls.Add(Theme.Status(ok ? what : what + " - " + fix, ok ? Theme.Good : Theme.Bad));
-            Check("Keyboard & mouse engine installed", CoreControl.Installed, "run the DeskView installer");
-            Check("Engine supports portals (DeskView build)", CoreControl.PortalCapable, "install the DeskView build of the engine to work directly on the other computer's picture");
+            if (engine.Builtin)
+            {
+                Check("Keyboard & mouse: DeskView built-in (nothing else to install)", true, "");
+                Check("Linked with the other computer (encrypted)", engine.ForwarderConnected || engine.AgentClient.Length > 0,
+                    S.Role == Role.Client ? "make sure DeskView runs on the server with the same pairing code" : "waiting for the other computer - start DeskView there");
+            }
+            else
+            {
+                Check("Keyboard & mouse engine installed", CoreControl.Installed, "run the DeskView installer with -ClassicEngine, or switch to DeskView built-in");
+                Check("Engine supports portals (DeskView build)", CoreControl.PortalCapable, "switch to DeskView built-in on the Switching & input page to work directly on the other computer's picture");
+            }
             Check("FFmpeg (video) found", engine.Media.HasFFmpeg, "run the DeskView installer (it downloads FFmpeg)");
             Check("Firewall allows DeskView on the local network", Firewall.RulesPresent(), "run the DeskView installer once as administrator");
             Check("Pairing code set", AppSettings.IsValidPairCode(S.PairCode), "set it on the Connection page");
@@ -190,7 +199,7 @@ namespace DeskView.UI
             var sm = new ScreenMap(engine);
             map.Controls.Add(sm);
             map.Controls.Add(Theme.Hint("Shortcuts: Ctrl+Alt+1..9 puts the other computer's main screen on that monitor, Ctrl+Alt+0 hides everything, Ctrl+Alt+D cycles."));
-            if (!CoreControl.PortalCapable) map.Controls.Add(Theme.Status("The installed engine has no portals: you can watch the other computer here but not work on it directly.", Theme.Warn));
+            if (!engine.Builtin && !CoreControl.PortalCapable) map.Controls.Add(Theme.Status("The installed engine has no portals: you can watch the other computer here but not work on it directly.", Theme.Warn));
             page.Controls.Add(map);
             page.Controls.Add(VirtualScreensCard());
             page.Controls.Add(VideoCard());
