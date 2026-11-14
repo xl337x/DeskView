@@ -140,14 +140,19 @@ function Run-Elevated([string]$arguments) {
     $p.ExitCode -eq 0
 }
 
+# Stops the DeskView of THIS install only (a test install into another folder must never stop the real one).
+# Its video processes stop with it (they are tied to it with a job object).
 function Stop-DeskView {
+    $mine = [regex]::Escape((Join-Path $installDir 'DeskView.ps1'))
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-        ? { $_.ProcessId -ne $PID -and $_.CommandLine -match 'DeskView\.ps1' -and $_.CommandLine -notmatch 'Setup' } |
+        ? { $_.ProcessId -ne $PID -and $_.CommandLine -match $mine } |
         % { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Get-Process DeskView -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue   # an older exe build
-    # Only DeskView's own streams (they use srt://), never unrelated FFmpeg jobs.
-    Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe' OR Name='ffplay.exe'" | ? { $_.CommandLine -match 'srt://' } |
-        % { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if (-not $env:DESKVIEW_INSTALL) {
+        # the real install: also an old .exe build, the old tray script, and streams they may have left behind
+        Get-Process DeskView -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.ProcessId -ne $PID -and $_.CommandLine -match 'DeskView\.ps1' -and $_.CommandLine -notmatch 'Setup|tests' -and $_.CommandLine -match [regex]::Escape($env:LOCALAPPDATA) } |
+            % { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 # ---- uninstall -----------------------------------------------------------------------------------------

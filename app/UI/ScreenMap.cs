@@ -45,7 +45,7 @@ namespace DeskView.UI
             for (int k = 1; k <= 4; k++)
             {
                 int kk = k;
-                var it = new ToolStripMenuItem(string.Format("Show {0}'s screen {1}", name, k) + (k == 1 ? "  (its main screen)" : "")) { Checked = cur == k };
+                var it = new ToolStripMenuItem(string.Format("Show {0}'s screen {1}", name, k) + (k == 1 ? "  (its own display - a mirror of what it shows)" : "  (extra screen - drag its windows here)")) { Checked = cur == k };
                 it.Click += (o, e) => { engine.SetScreen(monitor, kk); Invalidate(); };
                 menu.Items.Add(it);
             }

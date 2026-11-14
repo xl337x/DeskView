@@ -1,4 +1,4 @@
-﻿# Install smoke test: runs the real setup into throwaway folders (no admin part, nothing started) and checks the
+# Install smoke test: runs the real setup into throwaway folders (no admin part, nothing started) and checks the
 # result is a working DeskView: the app folder copied whole, FFmpeg usable, role and pairing code handed over,
 # and the installed copy compiles and loads. Then uninstalls it again.
 # Continue: setup's own (expected) error messages arrive on stderr and must not end this test
@@ -28,7 +28,10 @@ try {
     Check 'updating removes old files (they would be compiled too) and keeps FFmpeg' (-not (Test-Path (Join-Path $env:DESKVIEW_INSTALL 'stale-old-file.cs')) -and ((Test-Path $ff) -or $onPath))
     $bad = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $setup -Source (Join-Path $PSScriptRoot '..\app') -Role Client -PairCode 'NOPE' -NoStart -SkipAdmin 2>&1 | Out-String
     Check 'a wrong pairing code is refused when nobody can be asked' ($bad -match 'pairing code')
+    $realBefore = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.CommandLine -match 'AppData\\Local\\DeskView\\DeskView\.ps1' } | % ProcessId)
     [void](& powershell -NoProfile -ExecutionPolicy Bypass -File $setup -Uninstall -SkipAdmin 2>&1)
+    $realAfter = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.CommandLine -match 'AppData\\Local\\DeskView\\DeskView\.ps1' } | % ProcessId)
+    Check 'uninstalling a test install leaves the real running DeskView alone' (@($realBefore | ? { $realAfter -notcontains $_ }).Count -eq 0) "running before: $($realBefore.Count), after: $($realAfter.Count)"
     Check 'uninstall removes program and settings' (-not (Test-Path $env:DESKVIEW_INSTALL) -and -not (Test-Path $env:DESKVIEW_HOME))
 }
 finally {
