@@ -397,11 +397,14 @@ public class DeskViewPictureHost : Form
     [DllImport("user32.dll")] static extern IntPtr SetParent(IntPtr child, IntPtr parent);
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsHungAppWindow(IntPtr h);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
     [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int i, int v);
-    [DllImport("user32.dll")] static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool repaint);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
 
     IntPtr child;
 
@@ -409,27 +412,37 @@ public class DeskViewPictureHost : Form
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
         BackColor = System.Drawing.Color.Black; Bounds = bounds;
+        // the same DPI handling as the player (per-monitor v2): Windows refuses to parent windows across a mismatch
+        var old = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try { CreateHandle(); } finally { if (old != IntPtr.Zero) SetThreadDpiAwarenessContext(old); }
     }
 
-    /// <summary>Takes the player's window in and shows the picture.</summary>
-    public void Adopt(IntPtr w)
+    /// <summary>Takes the player's window in and shows the picture. False (and the window left as it was) if Windows
+    /// refused.</summary>
+    public bool Adopt(IntPtr w)
     {
         const int GWL_STYLE = -16, WS_POPUP = unchecked((int)0x80000000), WS_CHILD = 0x40000000, WS_CAPTION = 0xC00000, WS_THICKFRAME = 0x40000;
         int style = GetWindowLong(w, GWL_STYLE);
         SetWindowLong(w, GWL_STYLE, (style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD);
-        SetParent(w, Handle);
+        if (SetParent(w, Handle) == IntPtr.Zero || GetParent(w) != Handle)
+        {
+            SetWindowLong(w, GWL_STYLE, style);
+            return false;
+        }
         child = w;
         Fit();
         if (!Visible) Show();
+        return true;
     }
 
-    /// <summary>True while the picture is inside; keeps it filling the window (the player may move itself).</summary>
+    /// <summary>True while the picture is inside and its player responds; keeps it filling the window (the player
+    /// may move itself).</summary>
     public bool Holding
     {
         get
         {
             if (child == IntPtr.Zero) return false;
-            if (!IsWindow(child) || GetParent(child) != Handle) { child = IntPtr.Zero; return false; }
+            if (!IsWindow(child) || GetParent(child) != Handle || IsHungAppWindow(child)) { child = IntPtr.Zero; return false; }
             Fit();
             return true;
         }
@@ -438,9 +451,13 @@ public class DeskViewPictureHost : Form
     void Fit()
     {
         RECT r; var want = RectangleToScreen(ClientRectangle);
+        // asynchronous: a player that stops responding must never stop DeskView
         if (GetWindowRect(child, out r) && (r.L != want.Left || r.T != want.Top || r.R != want.Right || r.B != want.Bottom))
-            MoveWindow(child, 0, 0, ClientSize.Width, ClientSize.Height, true);
+            SetWindowPos(child, IntPtr.Zero, 0, 0, ClientSize.Width, ClientSize.Height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     }
+
+    /// <summary>Back in front of other always-on-top windows (the taskbar, once clicked, goes above it).</summary>
+    public void Raise() { if (Visible) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
 
     /// <summary>The player went away: stop covering the monitor until the next picture arrives.</summary>
     public void Release() { child = IntPtr.Zero; if (Visible) Hide(); }

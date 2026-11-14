@@ -17,6 +17,7 @@
 // Messages (inside the encrypted frames, viewer -> agent): S <DISPLAYn|n> | M <nx> <ny> (0..65535 within the
 // streamed monitor) | B <button 0-4> <1 down/0 up> | W <delta> | H <delta> | K <vk> <scan> <ext 0/1> <1/0> | P
 using System;
+using System.Linq;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -412,6 +413,7 @@ public class DeskViewAgent
             Client = ip; Status = "controlled by " + ip;
             lock (sendLock) { sessionStream = s; sessionKeys = keys; sendSeq = 0; }
             edgeIn = null;
+            Send("V 2");                                          // what this agent understands (MS, U, CQ, P replies)
             Handle(first);
             // larger frames than the handshake allows: clipboard chunks (only after authentication)
             while (!stopping) Handle(DvProto.ReadFrame(s, keys, ref lastSeq, DvProto.MaxFileFrame));
@@ -426,6 +428,9 @@ public class DeskViewAgent
             {
                 lock (sendLock) { sessionStream = null; sessionKeys = null; }
                 edgeIn = null; clipIn = null;
+                // the other computer is gone: none of its screens holds windows any more (smart screens gives the
+                // monitors back after their grace time; it reports again within seconds of reconnecting)
+                OccupiedScreens = "";
                 ReleaseAll(); Client = ""; Status = "listening on " + Port;
             }
             try { c.Close(); } catch { }
@@ -440,6 +445,7 @@ public class DeskViewAgent
     void ServeFiles(Stream s, byte[][] keys, ref ulong lastSeq, string ip)
     {
         FileStream outFile = null; string outPath = null; long expected = 0, written = 0;
+        int files = 0; ulong replySeq = 0;
         Status = "receiving files from " + ip;
         try
         {
@@ -466,10 +472,21 @@ public class DeskViewAgent
                 {
                     outFile.Dispose(); outFile = null;
                     if (written != expected) { File.Delete(outPath); throw new InvalidDataException("file cut short"); }
-                    Received.Enqueue(outPath);
+                    Received.Enqueue(outPath); files++;
                 }
-                else if (msg == "BYE") return;
+                else if (msg == "BYE")
+                {
+                    // the sender only says "sent" once this arrives: everything is saved here
+                    DvProto.WriteFrame(s, keys, ++replySeq, "<DONE " + files);
+                    return;
+                }
             }
+        }
+        catch (Exception e)
+        {
+            // tell the sender why (disk full, ...) instead of just hanging up
+            try { DvProto.WriteFrame(s, keys, ++replySeq, "<ERR " + e.Message.Replace('\r', ' ').Replace('\n', ' ')); } catch { }
+            throw;
         }
         finally
         {
@@ -535,11 +552,11 @@ public class DeskViewAgent
 
     void Leave(int along)
     {
-        SendClipboardIfChanged();
         ReleaseAll();                 // nothing stays held here once the keyboard is back on the other machine
         edgeIn = null;
         Interlocked.Increment(ref Switches);
-        Send("L " + along);
+        Send("L " + along);           // the pointer goes back at once; the clipboard follows
+        SendClipboardIfChanged();
     }
 
     void SendClipboardIfChanged()
@@ -594,7 +611,25 @@ public class DeskViewAgent
                 case "H": Mouse(0x1000, int.Parse(p[1])); break;
                 case "K": Key(ushort.Parse(p[1]), ushort.Parse(p[2]), p[3] == "1", p[4] == "1"); Interlocked.Increment(ref Keys); break;
                 case "S": if (p.Length > 1 && p[1].Length <= 16) Interlocked.Exchange(ref requestedMonitor, p[1]); break;
-                case "P": break;                                       // keep-alive
+                case "MS":
+                {
+                    // a move over one of several pictures: which screen, and where on it (0..65535 each way)
+                    int n = int.Parse(p[1]);
+                    // the order screens are shared in (as the app's Tools.SharedScreens): the main one first, then left to right
+                    var screens = Screen.AllScreens.OrderBy(sc => sc.Primary ? 0 : 1).ThenBy(sc => sc.Bounds.X).ThenBy(sc => sc.Bounds.Y).ToArray();
+                    if (n < 1 || n > screens.Length) break;
+                    var b = screens[n - 1].Bounds;
+                    int x = b.Left + (int)Math.Round(int.Parse(p[2]) * (b.Width - 1) / 65535.0);
+                    int y = b.Top + (int)Math.Round(int.Parse(p[3]) * (b.Height - 1) / 65535.0);
+                    if (AvoidRightEdge && x >= VR - 2) x = VR - 3;
+                    if (AvoidLeftEdge && x <= VL + 1) x = VL + 2;
+                    SetCursor(x, y);
+                    Interlocked.Increment(ref Moves);
+                    break;
+                }
+                case "U": ReleaseAll(); break;                         // the viewer stopped sending input: let go of everything
+                case "CQ": SendClipboardIfChanged(); break;            // the viewer's keyboard came back to it: our clipboard goes along
+                case "P": Send("P"); break;                            // keep-alive, answered so a dead link is noticed
             }
         }
         catch (FormatException) { }
@@ -646,6 +681,23 @@ public class DeskViewForwarder
     public int Port = 9002;
     public volatile int VidL, VidT, VidW = 1, VidH = 1;   // where the remote picture is on this machine (physical px)
     public volatile bool Active;                          // forward input only while viewing
+
+    /// <summary>One picture of the other computer's screen on this computer: where it is drawn, the part that takes
+    /// input (the guide strip along the top stays this computer's), and which of the other computer's screens.</summary>
+    public class Picture { public System.Drawing.Rectangle Full, Hit; public int Screen; }
+    /// <summary>All pictures (replaced as a whole, never changed in place). Null: the single picture in VidL..VidH.</summary>
+    public volatile Picture[] Pictures;
+    /// <summary>The keyboard goes to the other computer only after a click into one of its pictures, and comes back
+    /// with a click on this computer (server: pictures share the desk with this computer's own monitors). Off: the
+    /// keyboard follows whenever a picture is shown (a client viewing the server full screen).</summary>
+    public volatile bool KeysNeedClick;
+    volatile bool kbdRemote;                              // a click went into a picture since the last local click
+    volatile int agentVersion;                            // what the agent told us it understands (0 = an older one)
+    DateTime lastHeard = DateTime.Now;
+    int lastScreen;                                       // the picture of the last forwarded move
+    readonly HashSet<int> localDown = new HashSet<int>(), remoteDown = new HashSet<int>();   // keys held, by where their press went (hook thread only)
+    readonly Dictionary<int, DateTime> keySeen = new Dictionary<int, DateTime>();   // last event per key (a held key repeats)
+    readonly object clipLock = new object();
     public bool AcceptInjected;                           // tests only: also treat synthetic input as physical
     public bool NoHooks;                                  // tests only: don't capture this machine's real input
     public bool CountInjected;                            // live QA only (DESKVIEW_QA_INPUT=1): synthetic input counts as physical
@@ -674,7 +726,7 @@ public class DeskViewForwarder
     volatile bool stopping;
     DvNative.HookProc mouseProc, keyProc;
     IntPtr mouseHook, keyHook, mod;
-    readonly BlockingCollection<string> queue = new BlockingCollection<string>(new ConcurrentQueue<string>(), 4096);
+    readonly BlockingCollection<string> queue = new BlockingCollection<string>(new ConcurrentQueue<string>());
     bool ctrl, alt;                                       // tracked while we swallow keys (async state is stale then)
     int lastNx = -1, lastNy = -1;
     readonly bool[] forwardedDown = new bool[5];          // buttons whose press went to the remote machine
@@ -699,10 +751,18 @@ public class DeskViewForwarder
     /// <summary>Ask the agent to stream another monitor (takes effect on the next connection too).</summary>
     public void SelectMonitor(string name) { Monitor = name; Enqueue("S " + name); }
 
-    void Enqueue(string s) { if (Connected) queue.TryAdd(s); }
+    void Enqueue(string s)
+    {
+        if (!Connected) return;
+        // a stalled link: drop pointer moves (newer ones follow), never presses, releases or keys
+        if (queue.Count > 2000 && (s.StartsWith("M ") || s.StartsWith("R ") || s.StartsWith("MS "))) return;
+        queue.Add(s);
+    }
 
     /// <summary>Forwarding right now: viewing and the encrypted link is up. Otherwise input stays local.</summary>
     bool Forwarding { get { return Active && Connected; } }
+    /// <summary>The keyboard goes to the other computer right now.</summary>
+    bool KeysForwarded { get { return (Forwarding && (kbdRemote || !KeysNeedClick)) || (RemoteOwned && Connected); } }
 
     void InstallHooks()
     {
@@ -728,18 +788,25 @@ public class DeskViewForwarder
         {
             if (stopping) { Application.ExitThread(); return; }
             // Clipboard, on this STA thread: ours goes over when the pointer does; theirs arrives when it comes back.
-            if (clipToSend) { clipToSend = false; SendClipboardIfChanged(); }
-            string incoming; while (clipToSet.TryDequeue(out incoming)) { lastClip = incoming; DvClip.SetText(incoming); }   // never on this (input) thread
+            // reading the clipboard can take a while (a program rendering its data): never on this input thread
+            if (clipToSend) { clipToSend = false; ThreadPool.QueueUserWorkItem(delegate { SendClipboardIfChanged(); }); }
+            string incoming; while (clipToSet.TryDequeue(out incoming)) { lock (clipLock) lastClip = incoming; DvClip.SetText(incoming); }   // never on this (input) thread
             if (!RemoteOwned && cloak.Visible) cloak.Hide();
-            bool fwd = Forwarding || RemoteOwned;
+            if (!Forwarding) kbdRemote = false;
+            bool fwd = KeysForwarded;
             if (fwd != wasForwarding)
             {
                 // Started or stopped forwarding: modifier tracking restarts from the real keyboard state, and
-                // anything still held on the remote side is let go.
+                // anything still held on the remote side is let go (there too: "U").
                 wasForwarding = fwd;
                 ctrl = (DvNative.GetAsyncKeyState(0x11) & 0x8000) != 0;
                 alt = (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
-                if (!fwd) for (int b = 0; b < 5; b++) forwardedDown[b] = false;
+                if (fwd) clipToSend = true;                     // the keyboard goes over: our clipboard goes along
+                else
+                {
+                    for (int b = 0; b < 5; b++) forwardedDown[b] = false;
+                    if (agentVersion >= 2) { Enqueue("U"); Enqueue("CQ"); }   // nothing stays held there; its clipboard comes back
+                }
             }
             // Re-register now and then so our hooks run before the engine's (it re-hooks when its core restarts)
             // and come back if Windows dropped them after a slow callback. Not while forwarding a stroke.
@@ -772,6 +839,7 @@ public class DeskViewForwarder
                 Connected = true; Status = "connected to " + Peer + " (encrypted)";
                 if (!string.IsNullOrEmpty(Name)) DvProto.WriteFrame(s, keys, ++seq, "N " + Name.Replace(' ', '_'));   // who we are
                 if (!string.IsNullOrEmpty(Monitor)) DvProto.WriteFrame(s, keys, ++seq, "S " + Monitor);
+                agentVersion = 0; lastHeard = DateTime.Now; lastScreen = 0;
                 // The agent's messages (pointer handed back, its clipboard) on their own thread: no added delay.
                 readerDead = false;
                 var reader = new Thread(() =>
@@ -790,7 +858,11 @@ public class DeskViewForwarder
                     if (readerDead) throw new IOException("the other machine closed the link");
                     string msg;
                     if (queue.TryTake(out msg, 100)) { DvProto.WriteFrame(s, keys, ++seq, msg); while (queue.TryTake(out msg)) DvProto.WriteFrame(s, keys, ++seq, msg); }
-                    if ((DateTime.Now - lastPing).TotalSeconds > 5) { DvProto.WriteFrame(s, keys, ++seq, "P"); lastPing = DateTime.Now; }
+                    // Every second while input goes over (5 s otherwise); an agent that answers pings and stays silent
+                    // for 4 s is gone (asleep, out of Wi-Fi): input comes back here instead of into nothing.
+                    double every = Forwarding || RemoteOwned ? 1 : 5;
+                    if ((DateTime.Now - lastPing).TotalSeconds > every) { DvProto.WriteFrame(s, keys, ++seq, "P"); lastPing = DateTime.Now; }
+                    if (agentVersion >= 2 && (DateTime.Now - lastHeard).TotalSeconds > every + 3) throw new IOException("the other machine stopped answering");
                 }
             }
             catch (Exception e) { Status = "not connected (" + e.Message + ")"; }
@@ -803,7 +875,20 @@ public class DeskViewForwarder
         }
     }
 
-    bool InPicture(int x, int y) { return x >= VidL && x < VidL + VidW && y >= VidT && y < VidT + VidH; }
+    bool InPicture(int x, int y) { return PictureAt(x, y) != null; }
+
+    /// <summary>The picture whose input area holds this point, or null.</summary>
+    Picture PictureAt(int x, int y)
+    {
+        var all = Pictures;
+        if (all != null) { foreach (var pic in all) if (pic.Hit.Contains(x, y)) return pic; return null; }
+        if (x >= VidL && x < VidL + VidW && y >= VidT && y < VidT + VidH)
+        {
+            var r = new System.Drawing.Rectangle(VidL, VidT, VidW, VidH);
+            return new Picture { Full = r, Hit = r, Screen = 0 };
+        }
+        return null;
+    }
 
     static int ButtonOf(int msg, uint mouseData)
     {
@@ -839,15 +924,11 @@ public class DeskViewForwarder
                 if ((!injected || AcceptInjected || CountInjected) && m.extra != DvNative.AgentMarker)
                 {
                     int msg = (int)w, x = m.pt.X, y = m.pt.Y;
-                    bool inPic = InPicture(x, y);
+                    var pic = PictureAt(x, y);
+                    bool inPic = pic != null;
                     if (msg == 0x0200)                                   // move: forward, let the local cursor move
                     {
-                        if (inPic)
-                        {
-                            int nx = (int)Math.Round((x - VidL) * 65535.0 / Math.Max(1, VidW - 1));
-                            int ny = (int)Math.Round((y - VidT) * 65535.0 / Math.Max(1, VidH - 1));
-                            if (nx != lastNx || ny != lastNy) { lastNx = nx; lastNy = ny; Enqueue("M " + nx + " " + ny); }
-                        }
+                        if (inPic) ForwardMove(pic, x, y);
                     }
                     else if (msg == 0x020A || msg == 0x020E)             // wheel: only over the picture
                     {
@@ -861,8 +942,14 @@ public class DeskViewForwarder
                         {
                             // A press over the picture goes remote, and so does its release wherever it happens;
                             // a press outside stays local together with its release. No stuck buttons either way.
-                            if (down && inPic) { forwardedDown[b] = true; Enqueue("B " + b + " 1"); return (IntPtr)1; }
+                            if (down && inPic)
+                            {
+                                ForwardMove(pic, x, y);                  // on the right screen, at the right spot
+                                kbdRemote = true;                        // the keyboard follows the click
+                                forwardedDown[b] = true; Enqueue("B " + b + " 1"); return (IntPtr)1;
+                            }
                             if (!down && forwardedDown[b]) { forwardedDown[b] = false; Enqueue("B " + b + " 0"); return (IntPtr)1; }
+                            if (down) kbdRemote = false;                 // a click on this computer: the keyboard is back here
                         }
                     }
                 }
@@ -870,6 +957,21 @@ public class DeskViewForwarder
         }
         finally { if (prev != IntPtr.Zero) DvNative.SetThreadDpiAwarenessContext(prev); }
         return DvNative.CallNextHookEx(mouseHook, code, w, l);
+    }
+
+    /// <summary>A move over a picture: its spot on that picture's screen. Several pictures (one per monitor) each
+    /// carry their screen; an older agent only knows one screen at a time, so it is switched first.</summary>
+    void ForwardMove(Picture pic, int x, int y)
+    {
+        var f = pic.Full;
+        int nx = (int)Math.Round((x - f.X) * 65535.0 / Math.Max(1, f.Width - 1));
+        int ny = (int)Math.Round((y - f.Y) * 65535.0 / Math.Max(1, f.Height - 1));
+        nx = Math.Max(0, Math.Min(65535, nx)); ny = Math.Max(0, Math.Min(65535, ny));
+        if (nx == lastNx && ny == lastNy && pic.Screen == lastScreen) return;
+        lastNx = nx; lastNy = ny;
+        if (pic.Screen > 0 && agentVersion >= 2) { lastScreen = pic.Screen; Enqueue("MS " + pic.Screen + " " + nx + " " + ny); return; }
+        if (pic.Screen > 0 && pic.Screen != lastScreen) { lastScreen = pic.Screen; Monitor = pic.Screen.ToString(); Enqueue("S " + Monitor); }
+        Enqueue("M " + nx + " " + ny);
     }
 
     /// <summary>The pointer touches the switching edge: hand pointer and keyboard to the other machine.
@@ -947,8 +1049,11 @@ public class DeskViewForwarder
     {
         if (!msg.StartsWith("<")) throw new InvalidDataException("not from the agent");
         var p = msg.Substring(1).Split(' ');
+        lastHeard = DateTime.Now;
         switch (p[0])
         {
+            case "V": int v; if (p.Length > 1 && int.TryParse(p[1], out v)) agentVersion = v; break;
+            case "P": break;
             case "L": int a; if (p.Length > 1 && int.TryParse(p[1], out a)) ComeBack(Math.Max(0, Math.Min(65535, a))); break;
             case "CB": clipIn = new StringBuilder(); break;
             case "CD": if (clipIn != null && p.Length > 1) { clipIn.Append(p[1]); if (clipIn.Length > MaxClipboardBytes / 3 * 4 + 8) clipIn = null; } break;
@@ -968,9 +1073,12 @@ public class DeskViewForwarder
         // Reading the clipboard can hang (another program's data it renders on request): on the clipboard thread,
         // with a time limit, never on this input thread.
         var text = DvClip.GetText(300);
-        if (string.IsNullOrEmpty(text) || text == lastClip || Encoding.UTF8.GetByteCount(text) > MaxClipboardBytes) return;
-        lastClip = text;
-        foreach (var f in DvClip.Frames(text, "")) Enqueue(f);
+        lock (clipLock)
+        {
+            if (string.IsNullOrEmpty(text) || text == lastClip || Encoding.UTF8.GetByteCount(text) > MaxClipboardBytes) return;
+            lastClip = text;
+            foreach (var f in DvClip.Frames(text, "")) Enqueue(f);
+        }
     }
 
     /// <summary>A nearly invisible window with an empty cursor, under the parked pointer.</summary>
@@ -1004,7 +1112,8 @@ public class DeskViewForwarder
             bool down = ((int)w == 0x0100 || (int)w == 0x0104);   // WM_KEYDOWN / WM_SYSKEYDOWN
             int vk = (int)k.vkCode;
             bool physical = (!injected || AcceptInjected || CountInjected) && k.extra != DvNative.AgentMarker;
-            bool fwd = Forwarding || (RemoteOwned && Connected);
+            bool fwd = KeysForwarded;
+            if (!Connected) remoteDown.Clear();
             if (physical)
             {
                 // Ctrl and the LEFT Alt only: AltGr arrives as LCtrl+RAlt and must keep typing { [ ] } etc.
@@ -1029,11 +1138,25 @@ public class DeskViewForwarder
                     return (IntPtr)1;
                 }
             }
-            if (fwd && physical)
+            if (physical)
             {
+                // A key is released where it was pressed: a Ctrl held while the keyboard moves over (or back) must
+                // not stay stuck down on either computer.
                 bool ext = (k.flags & 0x1) != 0;
-                Enqueue("K " + vk + " " + k.scanCode + " " + (ext ? 1 : 0) + " " + (down ? 1 : 0));
-                return (IntPtr)1;                                         // the key only happens remotely
+                string send = "K " + vk + " " + k.scanCode + " " + (ext ? 1 : 0) + " ";
+                DateTime seen;
+                if (down && keySeen.TryGetValue(vk, out seen) && (DateTime.Now - seen).TotalSeconds > 1.5) { localDown.Remove(vk); remoteDown.Remove(vk); }   // its release was missed (locked screen): a new press
+                keySeen[vk] = DateTime.Now;
+                if (down)
+                {
+                    // auto-repeat of a key that is already held belongs where its first press went
+                    bool remote = remoteDown.Contains(vk) || (fwd && !localDown.Contains(vk));
+                    if (remote) { remoteDown.Add(vk); Enqueue(send + "1"); return (IntPtr)1; }   // the key only happens remotely
+                    localDown.Add(vk);
+                }
+                else if (remoteDown.Remove(vk)) { Enqueue(send + "0"); return (IntPtr)1; }
+                else if (localDown.Remove(vk)) { }                       // pressed here: released here
+                else if (fwd) { Enqueue(send + "0"); return (IntPtr)1; }
             }
         }
         return DvNative.CallNextHookEx(keyHook, code, w, l);
@@ -1181,8 +1304,9 @@ public static class DeskViewFiles
             if (File.Exists(p)) items.Add(new KeyValuePair<string, string>(p, Path.GetFileName(p)));
             else if (Directory.Exists(p))
             {
-                // same spelling as the enumerated paths (GetFullPath would expand 8.3 short names and shift the cut)
-                var root = Path.GetDirectoryName(p.TrimEnd('\\'));
+                // same spelling as the enumerated paths (GetFullPath would expand 8.3 short names and shift the cut);
+                // a whole drive ("D:\\") has no parent: its folders are sent under their own names
+                var root = Path.GetDirectoryName(p.TrimEnd('\\')) ?? p.TrimEnd('\\');
                 foreach (var f in Directory.EnumerateFiles(p, "*", SearchOption.AllDirectories))
                     items.Add(new KeyValuePair<string, string>(f, f.Substring(root.Length).TrimStart('\\').Replace('\\', '/')));
             }
@@ -1197,31 +1321,55 @@ public static class DeskViewFiles
             var s = c.GetStream();
             var keys = DvProto.ClientHandshake(s, code);
             if (keys == null) return "the other machine refused the pairing code";
-            ulong seq = 0;
+            ulong seq = 0, rseq = 0;
             DvProto.WriteFrame(s, keys, ++seq, "FILES");
             long total = 0, sent = 0; foreach (var it in items) total += new FileInfo(it.Key).Length;
             var buf = new byte[32 * 1024];
             int n = 0;
-            foreach (var it in items)
+            try
             {
-                n++;
-                var len = new FileInfo(it.Key).Length;
-                DvProto.WriteFrame(s, keys, ++seq, "F " + Convert.ToBase64String(Encoding.UTF8.GetBytes(it.Value)) + " " + len);
-                using (var fs = new FileStream(it.Key, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                foreach (var it in items)
                 {
-                    int r;
-                    while ((r = fs.Read(buf, 0, buf.Length)) > 0)
+                    n++;
+                    var len = new FileInfo(it.Key).Length;
+                    DvProto.WriteFrame(s, keys, ++seq, "F " + Convert.ToBase64String(Encoding.UTF8.GetBytes(it.Value)) + " " + len);
+                    using (var fs = new FileStream(it.Key, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                     {
-                        DvProto.WriteFrame(s, keys, ++seq, "D " + Convert.ToBase64String(buf, 0, r));
-                        sent += r;
-                        if (progress != null) progress(string.Format("{0}/{1}: {2} ({3:0}%)", n, items.Count, it.Value, total == 0 ? 100 : sent * 100.0 / total));
+                        // exactly the announced length: a file that grows meanwhile is sent as it was
+                        long left = len; int r;
+                        while (left > 0 && (r = fs.Read(buf, 0, (int)Math.Min(buf.Length, left))) > 0)
+                        {
+                            DvProto.WriteFrame(s, keys, ++seq, "D " + Convert.ToBase64String(buf, 0, r));
+                            sent += r; left -= r;
+                            if (progress != null) progress(string.Format("{0}/{1}: {2} ({3:0}%)", n, items.Count, it.Value, total == 0 ? 100 : sent * 100.0 / total));
+                        }
+                        if (left > 0) return it.Value + " got shorter while it was being sent - send it again";
                     }
+                    DvProto.WriteFrame(s, keys, ++seq, "E");
                 }
-                DvProto.WriteFrame(s, keys, ++seq, "E");
+                DvProto.WriteFrame(s, keys, ++seq, "BYE");
+                s.Flush();
             }
-            DvProto.WriteFrame(s, keys, ++seq, "BYE");
-            s.Flush();
-            return null;
+            catch (IOException e)
+            {
+                // the other side hung up: it may have said why
+                try { c.ReceiveTimeout = 2000; var why = DvProto.ReadFrame(s, keys, ref rseq); if (why.StartsWith("<ERR ")) return "the other computer could not save it: " + why.Substring(5); } catch { }
+                return "the transfer was interrupted (" + e.Message + ")";
+            }
+            // wait for the other side to confirm that everything is saved (an older DeskView just closes the link)
+            c.ReceiveTimeout = 15000;
+            try
+            {
+                var answer = DvProto.ReadFrame(s, keys, ref rseq);
+                if (answer.StartsWith("<ERR ")) return "the other computer could not save it: " + answer.Substring(5);
+                return null;
+            }
+            catch (IOException e)
+            {
+                if (e.InnerException is SocketException && ((SocketException)e.InnerException).SocketErrorCode == SocketError.TimedOut)
+                    return "sent, but the other computer did not confirm it";
+                return null;   // closed after the last file: an older DeskView, which has no confirmation
+            }
         }
     }
 }

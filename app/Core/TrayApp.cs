@@ -93,17 +93,31 @@ namespace DeskView
             ExitThreadCore();
         }
 
+        /// <summary>Start at sign-in through the same Startup shortcut setup makes (DeskView runs inside powershell.exe,
+        /// so the process's own path is no use). Only for the installed copy: a copy run from elsewhere (tests, a
+        /// checkout) never takes over the real install's startup.</summary>
         public static void ApplyStartAtLogin(bool on)
         {
             try
             {
+                // an older version started itself from the Run key (as "powershell.exe --tray", which fails)
                 using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
-                {
-                    if (on) k.SetValue("DeskView", "\"" + Application.ExecutablePath + "\" --tray");
-                    else if (k.GetValue("DeskView") != null) k.DeleteValue("DeskView");
-                }
+                    if (k != null && k.GetValue("DeskView") != null) k.DeleteValue("DeskView");
+                var installed = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskView");
+                if (!string.Equals(Program.AppDir.TrimEnd('\\'), installed, StringComparison.OrdinalIgnoreCase)) return;
+                var link = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "DeskView.lnk");
+                if (!on) { if (System.IO.File.Exists(link)) System.IO.File.Delete(link); return; }
+                var shellType = Type.GetTypeFromProgID("WScript.Shell");
+                object shell = Activator.CreateInstance(shellType);
+                object sc = shellType.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { link });
+                var t = sc.GetType();
+                t.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { "powershell.exe" });
+                t.InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + System.IO.Path.Combine(installed, "DeskView.ps1") + "\" -Tray" });
+                t.InvokeMember("WindowStyle", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { 7 });
+                t.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { "DeskView" });
+                t.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, sc, null);
             }
-            catch { }
+            catch (Exception ex) { Log.Write("start at sign-in: " + ex.Message); }
         }
     }
 

@@ -55,6 +55,16 @@ try {
     Start-Sleep -Milliseconds 400; $c.Close(); Start-Sleep -Milliseconds 200
     Check 'more data than announced: rejected, no half file left' (-not (Test-Path "$dst\liar.bin"))
 
+    # "sent" only when the other side confirms it saved everything; if it can't, the sender is told why
+    $okFolder = $agent.ReceiveFolder
+    $blocker = Join-Path $work 'not-a-folder'; Set-Content $blocker 'x'
+    $agent.ReceiveFolder = Join-Path $blocker 'inside'      # a folder can't be made inside a file: saving fails
+    $err = [DeskViewFiles]::Send('127.0.0.1', 9104, 'TESTCODE2345', [string[]]@("$src\hello.txt"), $null)
+    Check 'the receiver cannot save: the sender gets the reason instead of "sent"' ($err -like 'the other computer could not save it*') "error=$err"
+    $agent.ReceiveFolder = $okFolder; Start-Sleep -Milliseconds 300
+    $err = [DeskViewFiles]::Send('127.0.0.1', 9104, 'TESTCODE2345', [string[]]@("$src\folder\a.txt"), $null)
+    Check 'after that, sending works again (confirmed)' ($err -eq $null -and (Test-Path "$dst\a.txt")) "error=$err"
+
     # a file session must not kick out the active remote-control session
     $ctl = New-Object Net.Sockets.TcpClient('127.0.0.1', 9104); $cs = $ctl.GetStream()
     $ck = [DvProto]::ClientHandshake($cs, 'TESTCODE2345'); [DvProto]::WriteFrame($cs, $ck, 1, 'P'); Start-Sleep -Milliseconds 300

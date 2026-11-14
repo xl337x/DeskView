@@ -1,5 +1,5 @@
 // Video: every local screen streamed (one encrypted SRT listener per screen, GPU encode) and players showing the
-// other computer's screens (GPU decode, frozen-picture watchdog). Same behaviour as the PowerShell DeskView.
+// other computer's screens (a stalled stream ends its player, which is restarted; pictures held on top by DeskView). Same behaviour as the PowerShell DeskView.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -18,8 +18,14 @@ namespace DeskView
 
         public static string Find(string name)
         {
-            var local = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffmpeg", name + ".exe");
-            if (File.Exists(local)) return local;
+            // the pinned, checksum-checked build that setup puts next to the app first (the app runs inside powershell.exe,
+            // so the process's own folder is PowerShell's), then one on PATH, then winget's
+            foreach (var dir in new[] { Program.AppDir, AppDomain.CurrentDomain.BaseDirectory })
+            {
+                if (string.IsNullOrEmpty(dir)) continue;
+                var local = Path.Combine(dir, "ffmpeg", name + ".exe");
+                if (File.Exists(local)) return local;
+            }
             foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
             {
                 try { var p = Path.Combine(dir.Trim(), name + ".exe"); if (File.Exists(p)) return p; } catch { }
@@ -64,14 +70,14 @@ namespace DeskView
 
     public class Sender
     {
-        public int N; public string Name; public Process P; public DateTime Started; public int Fails; public DateTime? RetryAt; public bool Gpu;
+        public int N; public string Name; public Process P; public DateTime Started; public int Fails; public DateTime? RetryAt; public bool Gpu; public string Report;
     }
 
     public class Player
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
-        public Size? RemoteRes; public string RemoteRect; public bool Passive; public DeskViewPictureHost Host; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
-        public DateTime LastStart = DateTime.MinValue; public long ReportLen = -1; public DateTime ReportGrew = DateTime.Now;
+        public Size? RemoteRes; public string RemoteRect; public bool Passive; public DeskViewPictureHost Host; public int AdoptFails; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
+        public DateTime LastStart = DateTime.MinValue;
         public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
 
@@ -129,14 +135,17 @@ namespace DeskView
         {
             string prof = Profile, enc = Encoder();
             int mbps = BitrateMbps[prof]; string b = mbps + "M", buf = (mbps * 500) + "k";
+            // A viewer that joins (a monitor switched to this screen, smart screens, a reconnect) shows nothing until the
+            // next key frame: one every 0.5 s on a wired network (1 s on Wi-Fi) instead of 2 s, at a small bitrate cost.
+            string gop = prof == "WiFi" ? "60" : "30";
             string encArgs;
             switch (enc)
             {
-                case "h264_nvenc": encArgs = "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
-                case "h264_qsv": encArgs = "-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
-                case "h264_amf": encArgs = "-c:v h264_amf -usage ultralowlatency -quality speed -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
-                case "h264_mf": encArgs = "-c:v h264_mf -hw_encoding 1 -scenario display_remoting -rate_control cbr -b:v " + b + " -g 120 -bf 0"; break;
-                default: encArgs = "-c:v libx264 -preset ultrafast -tune zerolatency -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g 120 -bf 0"; break;
+                case "h264_nvenc": encArgs = "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
+                case "h264_qsv": encArgs = "-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
+                case "h264_amf": encArgs = "-c:v h264_amf -usage ultralowlatency -quality speed -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
+                case "h264_mf": encArgs = "-c:v h264_mf -hw_encoding 1 -scenario display_remoting -rate_control cbr -b:v " + b + " -g " + gop + " -bf 0"; break;
+                default: encArgs = "-c:v libx264 -preset ultrafast -tune zerolatency -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
             }
             int port = S.VideoPort + n - 1;
             string url = "srt://0.0.0.0:" + port + "?mode=listener&latency=" + (LatencyMs[prof] * 1000) + "&pkt_size=1316&transtype=live&passphrase=" + S.VideoKey() + "&pbkeylen=32";
@@ -156,7 +165,11 @@ namespace DeskView
             var r = screen.Bounds;
             // The stream says which screen it is and where it sits, so the viewer maps its portal onto it.
             string meta = "DeskView|" + n + "|" + r.X + "," + r.Y + "," + r.Width + "," + r.Height;
-            st.P = Start(ffmpeg, "-hide_banner -loglevel error " + device + "-f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", null);
+            // a small report: tells afterwards whether a viewer was connected (then exiting is normal, not a failure)
+            st.Report = Path.Combine(Path.GetTempPath(), "deskview-ffmpeg-screen" + n + ".log");
+            try { File.Delete(st.Report); } catch { }
+            var env = new Dictionary<string, string> { { "FFREPORT", "file=" + st.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" } };
+            st.P = Start(ffmpeg, "-hide_banner -loglevel error -nostats " + device + "-f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", env);
             st.Started = DateTime.Now; st.Name = Tools.Short(screen);
         }
 
@@ -180,7 +193,12 @@ namespace DeskView
                 Sender st;
                 if (!Senders.TryGetValue(n, out st)) Senders[n] = st = new Sender { N = n };
                 if (st.P != null && !st.P.HasExited) continue;
-                if (st.P != null) { if ((DateTime.Now - st.Started).TotalSeconds < 3) st.Fails++; else st.Fails = 0; }
+                if (st.P != null)
+                {
+                    // A viewer came and went (switched its monitor away, smart screens gave it back): the listener simply
+                    // ends - start the next one at once. Only quick exits without any viewer are failures (back-off).
+                    if (ServedViewer(st.Report) || (DateTime.Now - st.Started).TotalSeconds >= 3) st.Fails = 0; else st.Fails++;
+                }
                 if (st.Fails >= 2 && st.Gpu) { cpuPath = true; st.Fails = 0; }
                 st.P = null;
                 if (st.RetryAt == null) st.RetryAt = DateTime.Now.AddSeconds(st.Fails > 0 ? Math.Min(30, 0.5 * Math.Pow(2, st.Fails)) : 0);
@@ -191,7 +209,13 @@ namespace DeskView
 
         // -------------------------------------------------------------------------------------------------- players
         public void StopPlayers() { foreach (var p in Players.Values) StopPlayer(p); Players.Clear(); }
-        public void StopPlayer(Player p) { Kill(p.P); p.P = null; if (p.Host != null) { p.Host.Close(); p.Host = null; } }
+        public void StopPlayer(Player p)
+        {
+            // the player first, then the window holding its picture (never destroy a window that still has its child)
+            if (p.P != null) { Kill(p.P); try { p.P.WaitForExit(500); } catch { } }
+            p.P = null;
+            if (p.Host != null) { p.Host.Release(); p.Host.Close(); p.Host = null; }
+        }
 
         public void SyncPlayers(IEnumerable<Tuple<string, Screen, int>> wanted, string peer)
         {
@@ -199,7 +223,18 @@ namespace DeskView
             foreach (var k in Players.Keys.ToList())
             {
                 var x = w.FirstOrDefault(t => t.Item1 == k);
-                if (x == null || x.Item3 != Players[k].RemoteN || x.Item2.Bounds != Players[k].Screen.Bounds) { StopPlayer(Players[k]); Players.Remove(k); }
+                if (x != null && x.Item3 == Players[k].RemoteN && x.Item2.Bounds == Players[k].Screen.Bounds) continue;
+                var pl = Players[k]; Players.Remove(k);
+                // The same screen moved to another monitor: move the running picture there instead of reconnecting
+                // (a reconnect is a second or more of black). Stretch scales to the old monitor's size: reconnect.
+                var to = w.FirstOrDefault(t => t.Item3 == pl.RemoteN && !Players.ContainsKey(t.Item1) && (x == null || x.Item3 != pl.RemoteN));
+                if (to != null && S.Picture != "Stretch" && pl.P != null && !pl.P.HasExited && pl.Host != null && pl.Host.Holding)
+                {
+                    pl.Key = to.Item1; pl.Screen = to.Item2; pl.Host.Bounds = to.Item2.Bounds; pl.Announced = false;
+                    Players[to.Item1] = pl;
+                    continue;
+                }
+                StopPlayer(pl);
             }
             foreach (var x in w)
                 if (!Players.ContainsKey(x.Item1))
@@ -222,7 +257,9 @@ namespace DeskView
             string enc = pl.Legacy ? "" : "&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             string url = "srt://" + Tools.Host(peer) + ":" + port + "?mode=caller&latency=" + (LatencyMs[prof] * 1000) + "&transtype=live&connect_timeout=3000" + enc;
             string vf = S.Picture == "Stretch" ? "-vf scale=" + r.Width + ":" + r.Height + " " : "";
-            string hw = pl.Fails < 4 ? "-hwaccel d3d11va " : "";   // GPU decode: ~3.5x less CPU
+            // a stream that stops sending (the other computer asleep, network gone) ends the player after 4 s instead of
+            // leaving a frozen picture: the restart below takes over
+            url += "&timeout=4000000";
             try { File.Delete(pl.Report); } catch { }
             var env = new Dictionary<string, string>
             {
@@ -231,58 +268,80 @@ namespace DeskView
             };
             // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
             string probe = pl.Legacy || pl.Fails >= 2 ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
-            pl.P = Start(ffplay, "-hide_banner -loglevel error " + hw + "-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
-            pl.LastStart = DateTime.Now; pl.ReportLen = -1; pl.ReportGrew = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
+            // Not "-fflags nobuffer": it drops the packets read while finding the picture size - the first key frame -
+            // so the picture only appeared at the next one (measured: 3.3 s -> 1.0 s to the first picture).
+            // No "-hwaccel d3d11va": this player's renderer can't use it (decoding stayed on the CPU anyway) and it
+            // made the picture start later. -nostats: the report holds only what is read from it.
+            pl.P = Start(ffplay, "-hide_banner -loglevel error -nostats -autoexit -fflags discardcorrupt -flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
+            pl.LastStart = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
         }
 
-        /// <summary>Keep players alive; returns true if what is shown changed (resolution / which screen).</summary>
+        /// <summary>Keep players alive; returns true if what is shown changed (a picture appeared or went away, its
+        /// resolution, which screen) - every such change must reach the hand-over areas, drop zones and guide.</summary>
         public bool ServicePlayers(string peer)
         {
             bool changed = false;
             foreach (var pl in Players.Values)
             {
-                if (pl.P == null || pl.P.HasExited)
+                bool wasLive = pl.Live;
+                if (ServicePlayer(pl, peer)) changed = true;
+                if (pl.Live != wasLive) changed = true;
+            }
+            return changed;
+        }
+
+        bool ServicePlayer(Player pl, string peer)
+        {
+            if (pl.P == null || pl.P.HasExited)
+            {
+                if (pl.P != null && pl.RemoteRes == null)
                 {
-                    if (pl.P != null && pl.RemoteRes == null)
-                    {
-                        pl.Fails++;
-                        // say so instead of leaving an empty monitor: the other computer is not sending this screen
-                        if (pl.Fails == 3 && !pl.WarnedDown) { pl.WarnedDown = true; var n = Notice; if (n != null) n("No picture from " + S.RemoteName + " screen " + pl.RemoteN + " yet. Make sure DeskView is running there (same pairing code) and it is on the network.", true); }
-                    }
-                    pl.P = null;
-                    if (pl.Host != null) pl.Host.Release();
-                    if ((DateTime.Now - pl.LastStart).TotalSeconds >= 2) StartPlayer(pl, peer);
-                    continue;
+                    pl.Fails++;
+                    // say so instead of leaving an empty monitor: the other computer is not sending this screen
+                    if (pl.Fails == 3 && !pl.WarnedDown) { pl.WarnedDown = true; var n = Notice; if (n != null) n("No picture from " + S.RemoteName + " screen " + pl.RemoteN + " yet. Make sure DeskView is running there (same pairing code) and it is on the network.", true); }
                 }
-                if (!pl.Passive)
+                pl.P = null; pl.RemoteRes = null;
+                if (pl.Host != null) pl.Host.Release();
+                if ((DateTime.Now - pl.LastStart).TotalSeconds >= 2) StartPlayer(pl, peer);
+                return false;
+            }
+            bool changed = false;
+            if (!pl.Passive)
+            {
+                // The picture goes inside a window of ours that is always in front and never takes focus (out of
+                // Alt+Tab; a stray Esc can't close it). The player's window is found by its title: its "main
+                // window" is a hidden helper.
+                var w = DeskViewPortal.FindVisibleWindow(pl.P.Id, "DeskView");
+                if (w != IntPtr.Zero)
                 {
-                    // The picture goes inside a window of ours that is always in front and never takes focus (out of
-                    // Alt+Tab; a stray Esc can't close it). The player's window is found by its title: its "main
-                    // window" is a hidden helper.
-                    var w = DeskViewPortal.FindVisibleWindow(pl.P.Id, "DeskView");
-                    if (w != IntPtr.Zero)
+                    if (pl.AdoptFails < 2)
                     {
                         if (pl.Host == null) pl.Host = new DeskViewPictureHost(pl.Screen.Bounds);
-                        pl.Host.Adopt(w); pl.Passive = true; changed = true;
+                        if (pl.Host.Adopt(w)) { pl.Passive = true; changed = true; }
+                        else if (++pl.AdoptFails >= 2) Log.Write("could not hold the picture for " + pl.Key + " in DeskView's own window - showing it as is");
                     }
+                    else { DeskViewPortal.MakePassive(w); pl.Passive = true; changed = true; }   // fallback: the player's own window
                 }
-                else if (pl.Host != null && !pl.Host.Holding)
-                {
-                    pl.ReportGrew = DateTime.Now; Kill(pl.P); pl.P = null; pl.Host.Release(); continue;   // picture window gone: restart
-                }
-                long len = File.Exists(pl.Report) ? new FileInfo(pl.Report).Length : 0;
-                if (len != pl.ReportLen) { pl.ReportLen = len; pl.ReportGrew = DateTime.Now; }
-                else if (pl.RemoteRes != null && (DateTime.Now - pl.ReportGrew).TotalSeconds > 6)
-                {
-                    // the picture froze (stream gone, ffplay keeps the last frame): reconnect
-                    pl.ReportGrew = DateTime.Now; Kill(pl.P); pl.P = null; if (pl.Host != null) pl.Host.Release(); continue;
-                }
+            }
+            else if (pl.Host != null && pl.AdoptFails < 2 && !pl.Host.Holding)
+            {
+                // the picture window is gone or the player hangs: start it again
+                Kill(pl.P); pl.P = null; pl.RemoteRes = null; pl.Host.Release(); return true;
+            }
+            if (pl.RemoteRes == null)
+            {
+                // read once per start: size and position of the other computer's screen (in the report's header)
                 var info = ReadInfo(pl.Report);
-                if (info != null && (pl.RemoteRes != info.size || pl.RemoteRect != info.rect))
+                if (info != null)
                 {
                     pl.RemoteRes = info.size; pl.RemoteRect = info.rect; pl.Fails = 0; pl.EverLive = true; changed = true;
                     if (!pl.Announced) { pl.Announced = true; pl.WarnedDown = false; var n = Notice; if (n != null) n(S.RemoteName + " screen " + pl.RemoteN + " is now on " + pl.Key + " (" + info.size.Width + "x" + info.size.Height + ")", false); }
                     if (pl.Legacy && !warnedLegacy) { warnedLegacy = true; var n = Notice; if (n != null) n("The other computer runs an old DeskView: its picture is not encrypted. Update it.", true); }
+                }
+                else if ((DateTime.Now - pl.LastStart).TotalSeconds > 12)
+                {
+                    // connected (or still trying) but no picture for 12 s: count it as a failed attempt and try again
+                    pl.Fails++; Kill(pl.P); pl.P = null; if (pl.Host != null) pl.Host.Release(); return true;
                 }
             }
             return changed;
@@ -313,6 +372,16 @@ namespace DeskView
             double scale = Math.Min((double)b.Width / rr.Width, (double)b.Height / rr.Height);
             int w = (int)Math.Round(rr.Width * scale), h = (int)Math.Round(rr.Height * scale);
             return new Rectangle(b.X + (b.Width - w) / 2, b.Y + (b.Height - h) / 2, w, h);
+        }
+
+        static bool ServedViewer(string report)
+        {
+            try
+            {
+                using (var fs = new FileStream(report, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    return new StreamReader(fs).ReadToEnd().Contains("Output #0");
+            }
+            catch { return false; }
         }
 
         static void Kill(Process p) { if (p != null) { try { if (!p.HasExited) p.Kill(); } catch { } } }

@@ -143,23 +143,29 @@ namespace DeskView
 
         public static AppSettings Load()
         {
-            try
+            // the settings, else the copy from the save before (a file cut short by a crash or power loss must not
+            // silently become "new settings": on a server that would mean a new pairing code)
+            foreach (var path in new[] { FilePath, FilePath + ".bak" })
             {
-                if (File.Exists(FilePath))
+                if (!File.Exists(path)) continue;
+                try
                 {
-                    var text = File.ReadAllText(FilePath);
+                    var text = File.ReadAllText(path);
                     var s = new JavaScriptSerializer().Deserialize<AppSettings>(text);
-                    if (s != null)
-                    {
-                        s.Screens = s.Screens ?? new Dictionary<string, int>();
-                        // Settings from before the engine choice existed: that computer was set up with the classic
-                        // engine, and the other computer still uses it - keep it (switching both is the user's call).
-                        if (!text.Contains("\"InputEngine\"")) s.InputEngine = "Classic";
-                        return s;
-                    }
+                    if (s == null) throw new FormatException("empty");
+                    s.Screens = s.Screens ?? new Dictionary<string, int>();
+                    // Settings from before the engine choice existed: that computer was set up with the classic
+                    // engine, and the other computer still uses it - keep it (switching both is the user's call).
+                    if (!text.Contains("\"InputEngine\"")) s.InputEngine = "Classic";
+                    if (path != FilePath) Log.Write("settings were unreadable - restored the previous copy");
+                    return s;
+                }
+                catch (Exception e)
+                {
+                    try { File.Copy(path, path + ".corrupt-" + DateTime.Now.ToString("yyyyMMddHHmmss"), true); } catch { }
+                    Log.Write("settings file " + Path.GetFileName(path) + " unreadable (" + e.Message + "), kept a copy");
                 }
             }
-            catch { }
             return new AppSettings();
         }
 
@@ -168,7 +174,16 @@ namespace DeskView
             Directory.CreateDirectory(Dir);
             var tmp = FilePath + ".tmp";
             File.WriteAllText(tmp, Pretty(new JavaScriptSerializer().Serialize(this)), new UTF8Encoding(false));
-            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null); else File.Move(tmp, FilePath);
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    // the old file becomes the .bak that Load falls back to
+                    if (File.Exists(FilePath)) File.Replace(tmp, FilePath, FilePath + ".bak"); else File.Move(tmp, FilePath);
+                    return;
+                }
+                catch (IOException) { if (attempt >= 3) throw; System.Threading.Thread.Sleep(100); }   // a virus scanner or backup tool holding it
+            }
         }
 
         /// <summary>12 characters from a cryptographic random generator (about 59 bits).</summary>

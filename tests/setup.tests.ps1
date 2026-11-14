@@ -17,7 +17,13 @@ try {
     Check "the whole app folder is installed ($($srcFiles.Count) files)" ($missing.Count -eq 0) ($missing -join ', ')
     $ff = Join-Path $env:DESKVIEW_INSTALL 'ffmpeg\ffmpeg.exe'
     $onPath = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
-    Check 'FFmpeg available (a capable one on PATH, or the pinned build)' ((Test-Path $ff) -or $onPath) $(if (Test-Path $ff) { 'pinned build' } else { "PATH: $onPath" })
+    $stamp = Join-Path $env:DESKVIEW_INSTALL 'ffmpeg\deskview-pinned.txt'
+    Check 'the pinned, checked FFmpeg is installed next to the app (never depends on one on PATH)' ((Test-Path $ff) -and (Test-Path $stamp)) $(if (Test-Path $stamp) { (Get-Content $stamp -Raw).Trim() } else { 'missing' })
+    $before = (Get-ChildItem $env:DESKVIEW_INSTALL -Recurse -File | Measure-Object).Count
+    $bad = Join-Path $root 'not-ffmpeg.zip'; Set-Content $bad 'nope'; [IO.File]::Delete($stamp)
+    $o2 = & powershell -NoProfile -ExecutionPolicy Bypass -File $setup -Source (Join-Path $PSScriptRoot '..\app') -Role Client -PairCode k7mpq3xr -FFmpegZip $bad -NoStart -SkipAdmin 2>&1 | Out-String
+    Check 'a wrong offline FFmpeg zip is refused and the install is left as it was' ($LASTEXITCODE -ne 0 -and $o2 -match 'checksum' -and (Test-Path $ff) -and (Get-ChildItem $env:DESKVIEW_INSTALL -Recurse -File | Measure-Object).Count -eq ($before - 1)) (($o2 -split "`n" | ? { $_ -match 'checksum' } | Select -First 1))
+    Set-Content $stamp 'ffmpeg-n9.0.2-57-gd838f9f9ae-win64-gpl-shared-9.0.zip'
     $h = Get-Content (Join-Path $env:DESKVIEW_HOME 'setup.json') -Raw | ConvertFrom-Json
     Check 'role, pairing code (normalised) and server address handed to the app' ($h.Role -eq 'Client' -and $h.PairCode -eq 'K7MPQ3XR' -and $h.ServerAddress -eq '10.0.0.10') ($h | ConvertTo-Json -Compress)
     $load = & powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$(Join-Path $env:DESKVIEW_INSTALL 'DeskView.ps1')' -LoadOnly; if ([DeskView.Program]) { 'loaded' }" 2>&1 | Out-String

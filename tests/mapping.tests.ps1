@@ -1,7 +1,7 @@
 # Unit tests: how the portal maps cursor height between the local monitor and a remote screen of another
 # resolution / shape (Fit mode adds black bars). No hardware or network needed.
 $ErrorActionPreference = 'Stop'
-Add-Type -Path (Join-Path $PSScriptRoot '..\app\DeskView-Portal.cs') -ReferencedAssemblies System.Windows.Forms
+Add-Type -Path (Join-Path $PSScriptRoot '..\app\DeskView-Portal.cs') -ReferencedAssemblies System.Windows.Forms, System.Drawing
 $bf = [Reflection.BindingFlags]'NonPublic,Instance'
 $toRemote = [DeskViewPortal].GetMethod('RemoteYFor', $bf)
 $toLocal  = [DeskViewPortal].GetMethod('LocalYFor', $bf)

@@ -246,6 +246,7 @@ namespace DeskView
         /// <summary>Server: monitor shows the other computer's screen n (0 = its own desktop again).</summary>
         public void SetScreen(string monitor, int n)
         {
+            Log.Write(n > 0 ? string.Format("{0}: set to the other computer's screen {1}", monitor, n) : monitor + ": given back");
             // the user gave a monitor back: smart screens must not take it again until that screen empties first
             int was;
             if (n <= 0 && S.Screens.TryGetValue(monitor, out was)) userReleased.Add(was);
@@ -338,7 +339,8 @@ namespace DeskView
         string lastOccupied = null; DateTime lastOccupiedSent = DateTime.MinValue, lastOccupiedCheck = DateTime.MinValue;
         readonly Dictionary<string, int> autoShown = new Dictionary<string, int>();        // monitor -> screen shown by smart screens
         readonly Dictionary<string, DateTime> emptySince = new Dictionary<string, DateTime>();
-        readonly HashSet<int> userReleased = new HashSet<int>();   // screens the user gave back while they held windows
+        readonly HashSet<int> userReleased = new HashSet<int>();
+        readonly Dictionary<int, DateTime> smartFailed = new Dictionary<int, DateTime>();   // screens smart screens showed whose picture never came   // screens the user gave back while they held windows
         string lastBusyLogged = null;
 
         /// <summary>Client: tell the server which extra screens (2, 3, ...) hold windows, when that changes.</summary>
@@ -367,11 +369,14 @@ namespace DeskView
             var busy = new HashSet<int>(occ.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => { int n; return int.TryParse(x, out n) ? n : 0; }).Where(n => n >= 2));
             if (occ != lastBusyLogged) { lastBusyLogged = occ; Log.Write("other computer's screens with windows: " + (occ.Length > 0 ? occ : "none")); }
             userReleased.RemoveWhere(n => !busy.Contains(n));   // emptied since the user gave it back: smart again
+            foreach (var n in smartFailed.Keys.Where(k => !busy.Contains(k)).ToList()) smartFailed.Remove(n);
             var monitors = Tools.OrderedScreens().Select(Tools.Short).ToList();
             foreach (var k in autoShown.Keys.ToList()) { int cur; if (!S.Screens.TryGetValue(k, out cur) || cur != autoShown[k]) autoShown.Remove(k); }   // the user changed it: theirs now
             foreach (var n in busy)
             {
                 if (S.Screens.ContainsValue(n) || n - 2 >= monitors.Count || userReleased.Contains(n)) continue;   // shown / no monitor / the user gave it back
+                DateTime failedAt;
+                if (smartFailed.TryGetValue(n, out failedAt) && (DateTime.Now - failedAt).TotalMinutes < 5) continue;   // its picture never came: not again for a while
                 var mon = monitors[n - 2];
                 if (S.Screens.ContainsKey(mon)) continue;                              // that monitor shows something the user chose
                 ApplyScreen(mon, n); autoShown[mon] = n; emptySince.Remove(mon);
@@ -450,7 +455,9 @@ namespace DeskView
         string PortalValue()
         {
             if (!S.Interactive || !CoreControl.PortalCapable) return null;
-            var pls = Media.Players.Values.OrderBy(p => p.Screen.Bounds.X).ToList();
+            // only pictures that are really there: a monitor still connecting (or reconnecting) shows this computer's
+            // own desktop and must not hand the pointer over
+            var pls = Media.Players.Values.Where(p => p.Live).OrderBy(p => p.Screen.Bounds.X).ToList();
             if (pls.Count == 0) return null;
             var rects = pls.Select(Media.PictureRect).ToList();
             var entries = new List<string>();
@@ -495,11 +502,17 @@ namespace DeskView
         {
             if (Builtin)
             {
-                var pl = Media.Players.Values.FirstOrDefault(p => p.Live);
-                if (pl == null) { forwarder.Active = false; return; }
-                var r = Media.PictureRect(pl);
-                forwarder.VidL = r.X; forwarder.VidT = r.Y; forwarder.VidW = r.Width; forwarder.VidH = r.Height;
-                if (forwarder.Monitor != pl.RemoteN.ToString()) forwarder.SelectMonitor(pl.RemoteN.ToString());
+                // every picture on every monitor takes input, each for its own screen of the other computer; the guide
+                // strip along the top stays clickable here
+                var pics = Media.Players.Values.Where(p => p.Live).Select(p =>
+                {
+                    var r = Media.PictureRect(p);
+                    int top = S.ShowGuide ? Math.Max(r.Y, p.Screen.Bounds.Top + UI.MonitorStrip.StripHeight) : r.Y;
+                    return new DeskViewForwarder.Picture { Full = r, Hit = Rectangle.FromLTRB(r.Left, Math.Min(top, r.Bottom), r.Right, r.Bottom), Screen = p.RemoteN };
+                }).ToArray();
+                if (pics.Length == 0) { forwarder.Active = false; forwarder.Pictures = null; return; }
+                forwarder.KeysNeedClick = true;   // this computer's own monitors stay in use: the keyboard follows clicks
+                forwarder.Pictures = pics;
                 forwarder.Active = true;
                 return;
             }
@@ -525,9 +538,9 @@ namespace DeskView
             foreach (var k in zones.Keys.ToList())
             {
                 Player p;
-                if (!Media.Players.TryGetValue(k, out p) || p.RemoteRes == null) { zones[k].Close(); zones.Remove(k); }
+                if (!Media.Players.TryGetValue(k, out p) || !p.Live) { zones[k].Close(); zones.Remove(k); }
             }
-            foreach (var pl in Media.Players.Values.Where(p => p.RemoteRes != null))
+            foreach (var pl in Media.Players.Values.Where(p => p.Live))
             {
                 DeskViewDropZone z;
                 if (!zones.TryGetValue(pl.Key, out z))
@@ -591,6 +604,7 @@ namespace DeskView
                 foreach (var pl in Media.Players.Values.Where(p => !p.EverLive && p.Fails >= 6).ToList())
                 {
                     OnNotice(string.Format("{0} has no screen {1} (or isn't sharing it yet) - {2} shows its own desktop again.", string.IsNullOrEmpty(S.RemoteName) ? "The other computer" : S.RemoteName, pl.RemoteN, pl.Key), true);
+                    if (autoShown.ContainsKey(pl.Key)) { smartFailed[pl.RemoteN] = DateTime.Now; autoShown.Remove(pl.Key); }   // don't take it again and again
                     Media.StopPlayer(pl); Media.Players.Remove(pl.Key);
                     if (S.Role == Role.Server) S.Screens.Remove(pl.Key); else S.ClientView = 0;
                     S.Save(); SyncPlayers();
@@ -616,7 +630,12 @@ namespace DeskView
                         OnNotice("Monitor layout changed - adjusted.", false);
                     }
                     ServiceDiscovery();
-                    if (strips.Count > 0) UpdateStrips();   // stay above the pictures
+                    // Keep the layers in order - picture, then the drop zone over it, then the guide strip - also after
+                    // something else (the taskbar, once clicked) went on top; and re-check the hand-over areas.
+                    foreach (var pl in Media.Players.Values) if (pl.Host != null) pl.Host.Raise();
+                    UpdateDropZones();
+                    if (strips.Count > 0) UpdateStrips();
+                    if (S.Role == Role.Server) UpdatePortals(); else UpdateForwarderPicture();
                     var before = S.Peer; Peer();
                     if (S.Role == Role.Client && S.Peer != before) forwarder.Peer = S.Peer;
                     if (Builtin && S.Role == Role.Server && !string.IsNullOrEmpty(S.Peer) && forwarder.Peer != S.Peer) forwarder.Peer = S.Peer;

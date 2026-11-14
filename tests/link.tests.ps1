@@ -44,11 +44,13 @@ try {
     Send 'R -1000 0'; Start-Sleep -Milliseconds 150
     $io.Clip = 'copied on the agent: Ã¼nÃ¯cÃ¶dÃ© âœ“'
     Send 'R -1000 0'
-    $got = @(Recv; Recv; Recv; Recv)
-    Check 'going back out the entry side hands the pointer back ("L" after its clipboard)' ($got[0] -eq '<CB' -and $got[1] -like '<CD *' -and $got[2] -eq '<CE' -and $got[3] -like '<L *') ($got | % { $_.Substring(0, [math]::Min(12, $_.Length)) })
-    $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($got[1].Substring(4)))
+    $raw = @(Recv; Recv; Recv; Recv; Recv)
+    Check 'the agent first says which messages it understands ("V 2")' ($raw[0] -eq '<V 2') $raw[0]
+    $got = @($raw | ? { $_ -notmatch '^<V ' })
+    Check 'going back out the entry side hands the pointer back at once ("L" first, its clipboard after)' ($got[0] -like '<L *' -and $got[1] -eq '<CB' -and $got[2] -like '<CD *' -and $got[3] -eq '<CE') ($got | % { $_.Substring(0, [math]::Min(12, $_.Length)) })
+    $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($got[2].Substring(4)))
     Check 'the agent''s clipboard text arrives intact (unicode)' ($text -eq $io.Clip)
-    $along = [int]$got[3].Split(' ')[1]; $expect = [int][math]::Round(590 * 65535 / 1079)   # left at height 590
+    $along = [int]$got[0].Split(' ')[1]; $expect = [int][math]::Round(590 * 65535 / 1079)   # left at height 590
     Check 'hand-back position: same height on the way back' ([math]::Abs($along - $expect) -le 70) "along=$along expect~$expect"
 
     Send 'R 10 10'; Start-Sleep -Milliseconds 150
@@ -73,6 +75,27 @@ try {
     Check 'smart screens: screen count and screens with windows arrive' ($agent.ScreenCount -eq 4 -and $agent.OccupiedScreens -eq '2,4') "count=$($agent.ScreenCount) occupied=$($agent.OccupiedScreens)"
     Send 'O -'; Send 'Q 99'; Send 'O 2;rm'; Start-Sleep -Milliseconds 200
     Check 'smart screens: "none" is understood, nonsense is refused' ($agent.OccupiedScreens -eq '' -and $agent.ScreenCount -eq 4) "count=$($agent.ScreenCount) occupied='$($agent.OccupiedScreens)'"
+    # newer messages: pings are answered (a dead link is noticed), moves name their screen (several pictures), and the
+    # agent's clipboard comes over on request (the keyboard came back to the viewer)
+    while ($s.DataAvailable) { [void](Recv) }
+    Send 'P'; $pong = Recv
+    Check 'a ping is answered (the viewer notices a link that went quiet)' ($pong -eq '<P') $pong
+    $shared = @([Windows.Forms.Screen]::AllScreens | Sort-Object { if ($_.Primary) { 0 } else { 1 } }, { $_.Bounds.X }, { $_.Bounds.Y })
+    $okMs = $true; $msDetail = @()
+    for ($n = 1; $n -le $shared.Count; $n++) {
+        Send "MS $n 32768 0"; Start-Sleep -Milliseconds 120
+        $b = $shared[$n - 1].Bounds; $ex = $b.Left + [int][math]::Round(32768 * ($b.Width - 1) / 65535.0)
+        if ($io.X -ne $ex -or $io.Y -ne $b.Top) { $okMs = $false }; $msDetail += "screen $n -> $($io.X),$($io.Y) (want $ex,$($b.Top))"
+    }
+    Check "a move names its screen: lands on that screen of the agent ($($shared.Count) screens)" $okMs ($msDetail -join '; ')
+    Send 'MS 99 0 0'; Send 'MS x y z'; Start-Sleep -Milliseconds 150
+    Check 'a move for a screen that does not exist (or nonsense) is ignored' ($agent.Client -ne '')
+    $io.Clip = 'agent clipboard on request'
+    Send 'CQ'; $cq = @(Recv; Recv; Recv)
+    Check 'asked for its clipboard, the agent sends it' ($cq[0] -eq '<CB' -and [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cq[1].Substring(4))) -eq $io.Clip) ($cq -join ' | ')
+    Send 'U'; Start-Sleep -Milliseconds 100
+    Check '"U" (the viewer stopped forwarding) is understood' ($agent.Client -ne '')
+
     Send '<L 5'; Start-Sleep -Milliseconds 300
     $closed = $false; try { Send 'P'; Send 'P'; Start-Sleep -Milliseconds 200; Send 'P' } catch { $closed = $true }
     Check 'a frame claiming to come from the agent is refused (reflection)' ($closed -or $agent.Client -eq '')
@@ -103,6 +126,30 @@ try {
     [void]$fw.TryEnter(1919, 300); [void](WaitFor { $agent.Switches -gt $sw + 2 })
     $fw.TakeBack()
     Check 'Ctrl+Alt+0 (take back) returns the pointer at once' (-not $fw.RemoteOwned)
+
+    # several pictures (one per monitor): a move over each lands on that picture's screen of the other computer
+    $bf = [Reflection.BindingFlags]'NonPublic,Instance'
+    $shared = @([Windows.Forms.Screen]::AllScreens | Sort-Object { if ($_.Primary) { 0 } else { 1 } }, { $_.Bounds.X }, { $_.Bounds.Y })
+    $picA = New-Object 'DeskViewForwarder+Picture'; $picA.Full = New-Object Drawing.Rectangle 0, 0, 1000, 500; $picA.Hit = New-Object Drawing.Rectangle 0, 30, 1000, 470; $picA.Screen = 1
+    $picB = New-Object 'DeskViewForwarder+Picture'; $picB.Full = New-Object Drawing.Rectangle 1000, 0, 1000, 500; $picB.Hit = New-Object Drawing.Rectangle 1000, 30, 1000, 470; $picB.Screen = [math]::Min(2, $shared.Count)
+    $fw.Pictures = [DeskViewForwarder+Picture[]]@($picA, $picB)
+    $at = [DeskViewForwarder].GetMethod('PictureAt', $bf); $fm = [DeskViewForwarder].GetMethod('ForwardMove', $bf)
+    Check 'the picture under the pointer is found; the guide strip at the top is not part of it' ($at.Invoke($fw, @(500, 200)) -eq $picA -and $at.Invoke($fw, @(1500, 200)) -eq $picB -and $at.Invoke($fw, @(500, 10)) -eq $null -and $at.Invoke($fw, @(2500, 200)) -eq $null)
+    [void]$fm.Invoke($fw, @($picB.PSObject.BaseObject, 1000, 0)); [void](WaitFor { $io.X -eq $shared[$picB.Screen - 1].Bounds.Left })
+    $bB = $shared[$picB.Screen - 1].Bounds
+    Check "a move over the second picture lands on its screen ($($picB.Screen)) of the other computer" ($io.X -eq $bB.Left -and $io.Y -eq $bB.Top) "$($io.X),$($io.Y) want $($bB.Left),$($bB.Top)"
+    [void]$fm.Invoke($fw, @($picA.PSObject.BaseObject, 999, 499)); $bA = $shared[0].Bounds; [void](WaitFor { $io.X -eq $bA.Right - 1 })
+    Check 'and over the first picture on its screen (1), far corner to far corner' ($io.X -eq $bA.Right - 1 -and $io.Y -eq $bA.Bottom - 1) "$($io.X),$($io.Y) want $($bA.Right - 1),$($bA.Bottom - 1)"
+    # the keyboard follows clicks when the pictures share the desk with this computer's own monitors
+    $kf = [DeskViewForwarder].GetProperty('KeysForwarded', $bf); $kr = [DeskViewForwarder].GetField('kbdRemote', $bf)
+    $fw.Active = $true; $fw.KeysNeedClick = $true; $kr.SetValue($fw, $false)
+    Check 'keys stay on this computer until a click goes into a picture' (-not $kf.GetValue($fw))
+    $kr.SetValue($fw, $true)
+    Check 'after a click into a picture, keys go to the other computer' ($kf.GetValue($fw))
+    $fw.KeysNeedClick = $false; $kr.SetValue($fw, $false)
+    Check 'a client viewing the server full screen: keys follow the picture without a click' ($kf.GetValue($fw))
+    $fw.Active = $false; $fw.Pictures = $null
+
     [void]$fw.TryEnter(1919, 300); [void](WaitFor { $io.X -eq 1 })
     $agent.Stop()
     Check 'if the link drops while over there, the pointer comes home' (WaitFor { -not $fw.RemoteOwned } 3000)

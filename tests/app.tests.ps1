@@ -1,4 +1,4 @@
-﻿# Tests for the DeskView app's logic: compiles and loads app\**\*.cs exactly like DeskView.ps1 does for users, and checks its building blocks
+# Tests for the DeskView app's logic: compiles and loads app\**\*.cs exactly like DeskView.ps1 does for users, and checks its building blocks
 # without starting the app. Build it first: gui\build.ps1
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Web.Extensions
@@ -114,11 +114,11 @@ if ($ffplay) {
     $p = $start.Invoke($null, @($ffplay, "-hide_banner -loglevel error -noborder -left $($box.X) -top $($box.Y) -x 320 -y 240 -window_title DVQA-PICTURE -f lavfi -i testsrc=size=320x240:rate=30", $null))
     $w = [IntPtr]::Zero; for ($i = 0; $i -lt 100 -and $w -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 50; $w = [DeskViewPortal]::FindVisibleWindow($p.Id, 'DVQA-PICTURE') }
     $pictureHost = New-Object DeskViewPictureHost $box
-    $pictureHost.Adopt($w)
+    $adopted = $pictureHost.Adopt($w)
     for ($i = 0; $i -lt 10; $i++) { Start-Sleep -Milliseconds 100; [System.Windows.Forms.Application]::DoEvents() }
     $bmp = New-Object System.Drawing.Bitmap 320, 240; [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($box.X, $box.Y, 0, 0, $bmp.Size)
     $colours = @{}; for ($x = 5; $x -lt 320; $x += 20) { $c = $bmp.GetPixel($x, 60); $colours["$($c.R),$($c.G),$($c.B)"] = 1 }
-    Check 'the picture is held by a window that is always on top' ($w -ne [IntPtr]::Zero -and [DeskViewPortal]::IsTopmost($pictureHost.Handle) -and $pictureHost.Holding)
+    Check 'the picture is held by a window that is always on top' ($adopted -and $w -ne [IntPtr]::Zero -and [DeskViewPortal]::IsTopmost($pictureHost.Handle) -and $pictureHost.Holding)
     Check "the picture is what is on the screen there ($($colours.Count) colours of the test picture)" ($colours.Count -ge 6)
     try { $p.Kill() } catch { }
     for ($i = 0; $i -lt 20 -and $pictureHost.Holding; $i++) { Start-Sleep -Milliseconds 100 }
@@ -126,5 +126,13 @@ if ($ffplay) {
     $pictureHost.Close()
 }
 
+# ---------------------------------------------------------------------------------------------- FFmpeg next to the app
+# The app runs inside powershell.exe: the FFmpeg that setup puts next to the app must be found first, not one on PATH.
+$fakeApp = Join-Path $env:TEMP "dv-app-ffmpeg-$PID"; New-Item -ItemType Directory -Force (Join-Path $fakeApp 'ffmpeg') | Out-Null
+Set-Content (Join-Path $fakeApp 'ffmpeg\ffmpeg.exe') 'x'
+$oldDir = $env:DESKVIEW_APPDIR; $env:DESKVIEW_APPDIR = $fakeApp
+$found = (& $T 'DeskView.Tools')::Find('ffmpeg')
+$env:DESKVIEW_APPDIR = $oldDir; [IO.Directory]::Delete($fakeApp, $true)
+Check 'FFmpeg next to the app is used first (setup''s pinned build), not one on PATH' ($found -eq (Join-Path $fakeApp 'ffmpeg\ffmpeg.exe')) $found
 "== app: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

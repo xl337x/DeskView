@@ -20,7 +20,8 @@ param(
     [string]$ServerAddress,                                        # client: the server's address (else found on the network)
     [ValidateRange(-1, 4)] [int]$VirtualScreens = -1,              # add N virtual screens (0 removes them; -1 leaves them)
     [ValidateSet('Left', 'Right')] [string]$VirtualScreensSide = 'Left',   # where they sit next to this computer's own screens
-    [switch]$ClassicEngine,                                        # also install the classic keyboard/mouse engine (optional)
+    [switch]$ClassicEngine,
+    [string]$FFmpegZip,                                            # the pinned FFmpeg zip, for a PC without internet access                                        # also install the classic keyboard/mouse engine (optional)
     [switch]$Uninstall,
     [switch]$NoStart,             # tests: install only, don't start DeskView or add it to startup
     [switch]$SkipAdmin,           # tests: no administrator part
@@ -53,18 +54,19 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
 }
 
 # Asked once per laptop: an update (or a reinstall) leaves the extra screens as they are and doesn't ask again.
+# The answer counts as given only once it worked ("<n> ok"), so a declined prompt or a blocked driver is asked again.
 $extraScreensAsked = Join-Path $settingsDir 'extra-screens-chosen.txt'
+function Test-VirtualScreenDevice {
+    [bool](Get-PnpDevice -Class Display -PresentOnly -ErrorAction SilentlyContinue | ? { $_.Status -eq 'OK' -and ($_.FriendlyName -match 'Virtual Display' -or ($_.HardwareID -join ' ') -match 'MttVDD') })
+}
 function Test-ExtraScreensChosen {
-    if (Test-Path $extraScreensAsked) { return $true }
-    [bool](Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { $_.FriendlyName -match 'Virtual Display' -or ($_.HardwareID -join ' ') -match 'MttVDD' })
+    if ((Test-Path $extraScreensAsked) -and ((Get-Content $extraScreensAsked -Raw) -match 'ok')) { return $true }
+    Test-VirtualScreenDevice
 }
 function Ask-ExtraScreens {
     Write-Host 'This laptop''s windows can be dragged onto the server''s monitors through extra screens (one per monitor).'
     $answer = Read-Host '   How many extra screens should this laptop get? (0-4, Enter = 3)'
-    $n = if ($answer -match '^[0-4]$') { [int]$answer } else { 3 }
-    New-Item -ItemType Directory -Force $settingsDir | Out-Null
-    Set-Content $extraScreensAsked $n
-    $n
+    if ($answer -match '^[0-4]$') { [int]$answer } else { 3 }
 }
 
 # ---- virtual screens (Virtual Display Driver, github.com/VirtualDrivers/Virtual-Display-Driver) -------------
@@ -95,6 +97,8 @@ function Set-VirtualScreens([int]$count) {
         if ($sig.Status -ne 'Valid') { Write-Host "The virtual display driver's signature is not valid ($($sig.Status)) - not installed."; return $false }
         $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine')
         $store.Open('ReadWrite'); $store.Add($sig.SignerCertificate); $store.Close()
+        New-Item -ItemType Directory -Force $cfgDir | Out-Null
+        Set-Content (Join-Path $cfgDir 'deskview-cert.txt') $sig.SignerCertificate.Thumbprint   # so uninstall removes exactly this trust again
         New-Item -ItemType Directory -Force $cfgDir | Out-Null
         if (-not (Test-Path $cfg)) { Copy-Item (Join-Path $drv 'vdd_settings.xml') $cfg }
         pnputil /add-driver $inf /install | Out-Null
@@ -128,7 +132,23 @@ function Arrange-VirtualScreens {
     } catch { Write-Warning "Arranging the virtual screens failed: $($_.Exception.Message) - use Settings > System > Display." }
 }
 # ---- elevated parts ------------------------------------------------------------------------------------
-if ($RemoveRules) { Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; exit 0 }
+if ($RemoveRules) {
+    Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    # the extra screens: without DeskView they are invisible monitors where windows and the pointer get lost
+    $cfgDir = 'C:\VirtualDisplayDriver'
+    Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { $_.FriendlyName -match 'Virtual Display' -or ($_.HardwareID -join ' ') -match 'MttVDD' } |
+        % { pnputil /remove-device $_.InstanceId | Out-Null }
+    $drivers = (pnputil /enum-drivers | Out-String) -split '\r?\n\s*\r?\n'
+    foreach ($d in $drivers | ? { $_ -match '(?i)mttvdd\.inf' }) { if ($d -match '(oem\d+\.inf)') { pnputil /delete-driver $Matches[1] /uninstall /force | Out-Null } }
+    $thumbFile = Join-Path $cfgDir 'deskview-cert.txt'
+    if (Test-Path $thumbFile) {
+        $thumb = (Get-Content $thumbFile -Raw).Trim()
+        $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine'); $store.Open('ReadWrite')
+        $store.Certificates | ? { $_.Thumbprint -eq $thumb } | % { $store.Remove($_) }; $store.Close()
+    }
+    if (Test-Path $cfgDir) { [IO.Directory]::Delete($cfgDir, $true) }
+    exit 0
+}
 if ($Elevated) {
     Write-Host 'Firewall: allowing DeskView from the local network only (video, control, finding the other computer)...'
     Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -177,8 +197,11 @@ if ($Uninstall) {
     Stop-DeskView
     if (Test-Path $startupLink) { [IO.File]::Delete($startupLink) }
     foreach ($dir in $installDir, $settingsDir) { if (Test-Path $dir) { [IO.Directory]::Delete($dir, $true) } }
-    if (-not $SkipAdmin -and (Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue)) {
-        Write-Host 'Removing the firewall rules (a Windows prompt will appear)...'
+    # an older DeskView started itself from the Run key
+    Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name DeskView -ErrorAction SilentlyContinue
+    $vdd = (Test-Path 'C:\VirtualDisplayDriver') -or (Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { ($_.HardwareID -join ' ') -match 'MttVDD' })
+    if (-not $SkipAdmin -and ((Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue) -or $vdd)) {
+        Write-Host 'Removing the firewall rules and extra screens (a Windows prompt will appear)...'
         [void](Run-Elevated '-RemoveRules')
     }
     Write-Host 'DeskView removed.' -ForegroundColor Green
@@ -186,72 +209,13 @@ if ($Uninstall) {
 }
 
 # ---- install -------------------------------------------------------------------------------------------
+# Order matters: every question and every download happens while the old DeskView keeps running; only then is it
+# stopped, updated and started again - and started again even when something fails on the way.
 Write-Host '== DeskView setup ==' -ForegroundColor Cyan
 if (-not $Source) { $Source = $PSScriptRoot }
 if (-not (Test-Path (Join-Path $Source 'DeskView.ps1'))) { throw "No DeskView app in '$Source' (run install.ps1, or pass -Source <checkout>\app)." }
 
-# A laptop's windows can only go onto the other computer's monitors through extra (virtual) screens: offer them.
-if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin -and -not (Test-ExtraScreensChosen)) {
-    $VirtualScreens = Ask-ExtraScreens
-}
-
-# 1. Administrator part - only when something is actually missing.
-$rules = @(Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | % DisplayName)
-$needAdmin = @($rulesWanted | ? { $rules -notcontains $_.Name }).Count -gt 0 -or $VirtualScreens -ge 0 -or ($ClassicEngine -and -not (Test-Path $engineGuiExe))
-if ($SkipAdmin) { Write-Host 'Step 1/4: administrator part skipped.' }
-elseif ($needAdmin) {
-    Write-Host 'Step 1/4: administrator approval for the firewall rules (a Windows prompt will appear)...'
-    $elevArgs = "-Elevated -VirtualScreens $VirtualScreens" + $(if ($ClassicEngine) { ' -ClassicEngine' })
-    if (-not (Run-Elevated $elevArgs)) { Write-Warning 'The administrator part did not fully succeed (see above).' }
-    if ($VirtualScreens -gt 0) { Arrange-VirtualScreens }
-} else { Write-Host 'Step 1/4: firewall rules already in place.' }
-
-# 2. Copy the app (the whole folder, so every file is from the same version; FFmpeg and old files handled below).
-Write-Host "Step 2/4: installing to $installDir"
-if (-not $NoStart) { Stop-DeskView }
-New-Item -ItemType Directory -Force $installDir | Out-Null
-$src = (Resolve-Path $Source).Path.TrimEnd('\'); $dst = (Resolve-Path $installDir).Path.TrimEnd('\')
-if ($src -ne $dst) {
-    # mirror, but keep the downloaded FFmpeg
-    $null = robocopy $src $dst /MIR /XD ffmpeg /NFL /NDL /NJH /NJS /NP
-    if ($LASTEXITCODE -ge 8) { throw "Copying DeskView failed (robocopy $LASTEXITCODE)." }
-}
-
-# FFmpeg: use one on PATH if it can do what DeskView needs (screen capture, SRT, ffplay), else the pinned build.
-function Test-FFmpeg([string]$exe) {
-    if (-not $exe -or -not (Test-Path $exe) -or -not (Test-Path (Join-Path (Split-Path $exe) 'ffplay.exe'))) { return $false }
-    $filters = & $exe -hide_banner -filters 2>$null | Out-String; $protocols = & $exe -hide_banner -protocols 2>$null | Out-String
-    ($filters -match '\bddagrab\b') -and ($protocols -match '(?m)^\s*srt\s*$')
-}
-$ffDir = Join-Path $installDir 'ffmpeg'
-$pathFF = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
-if (-not (Test-FFmpeg $pathFF) -and -not (Test-FFmpeg (Join-Path $ffDir 'ffmpeg.exe'))) {
-    Write-Host '        downloading FFmpeg (82 MB, once)...'
-    $zip = Join-Path $env:TEMP $ffName; $ok = $false
-    foreach ($u in $ffUrls) {
-        try {
-            (New-Object Net.WebClient).DownloadFile($u, $zip)
-            if ((Get-FileHash $zip -Algorithm SHA256).Hash -eq $ffSha256) { $ok = $true; break }
-            Write-Warning "FFmpeg from $u does not match its checksum - not used."
-        } catch { Write-Warning "FFmpeg download from $u failed: $($_.Exception.Message)" }
-    }
-    if (-not $ok) { throw 'Could not get FFmpeg (download or checksum failed).' }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    if (Test-Path $ffDir) { [IO.Directory]::Delete($ffDir, $true) }
-    New-Item -ItemType Directory -Force $ffDir | Out-Null
-    $z = [IO.Compression.ZipFile]::OpenRead($zip)
-    try {
-        # only what DeskView runs: ffmpeg, ffplay and their libraries
-        foreach ($e in $z.Entries | ? { $_.FullName -match '/bin/[^/]+\.(exe|dll)$' -and $_.Name -ne 'ffprobe.exe' }) {
-            [IO.Compression.ZipFileExtensions]::ExtractToFile($e, (Join-Path $ffDir $e.Name), $true)
-        }
-    } finally { $z.Dispose() }
-    [IO.File]::Delete($zip)
-    if (-not (Test-FFmpeg (Join-Path $ffDir 'ffmpeg.exe'))) { throw 'FFmpeg was installed but cannot capture the screen or use SRT.' }
-}
-
-# 3. Role and pairing: handed to DeskView in setup.json, which it applies at its next start.
-Write-Host 'Step 3/4: pairing'
+# 1. Role and pairing.
 New-Item -ItemType Directory -Force $settingsDir | Out-Null
 function Get-KnownCode {
     foreach ($f in 'app.json', 'settings.json') {
@@ -261,10 +225,15 @@ function Get-KnownCode {
     $null
 }
 $known = Get-KnownCode
+$knownRole = $null
+$p = Join-Path $settingsDir 'app.json'
+if (Test-Path $p) { try { $r = (Get-Content $p -Raw | ConvertFrom-Json).Role; if ($r -eq 1) { $knownRole = 'Server' } elseif ($r -eq 2) { $knownRole = 'Client' } } catch { } }
+if ($Role -and $knownRole -and $Role -ne $knownRole) {
+    # a server's own code is not the code of the server a client must join (and the other way round)
+    Write-Host "   Role changed ($knownRole -> $Role): the old pairing is replaced."
+    $known = $null
+}
 if (-not $Role) {
-    $knownRole = $null
-    $p = Join-Path $settingsDir 'app.json'
-    if (Test-Path $p) { try { $r = (Get-Content $p -Raw | ConvertFrom-Json).Role; if ($r -eq 1) { $knownRole = 'Server' } elseif ($r -eq 2) { $knownRole = 'Client' } } catch { } }
     if ($knownRole) { $Role = $knownRole }
     elseif (-not $canAsk) { throw 'Pass -Role Server or -Role Client (no one to ask).' }
     else {
@@ -272,12 +241,6 @@ if (-not $Role) {
         $Role = if ($isServerAnswer) { 'Server' } else { 'Client' }
         Write-Host '   Then set up the other computer the same way (as the other role).'
     }
-}
-# The role was only learned just now: offer a client its extra screens here (same question as above).
-if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin -and -not (Test-ExtraScreensChosen)) {
-    $VirtualScreens = Ask-ExtraScreens
-    if (Run-Elevated "-Elevated -VirtualScreens $VirtualScreens") { if ($VirtualScreens -gt 0) { Arrange-VirtualScreens } }
-    else { Write-Warning 'The extra screens were not added (see above).' }
 }
 $codePattern = '^[2-9A-HJKMNP-Z]{8,12}$'
 if ($Role -eq 'Server') {
@@ -287,9 +250,6 @@ if ($Role -eq 'Server') {
         $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose()
         $PairCode = -join ($bytes | % { $alphabet[$_ % $alphabet.Length] })
     }
-    Write-Host ''
-    Write-Host "   This computer is the SERVER. Pairing code:  $PairCode" -ForegroundColor Green
-    Write-Host '   Enter it when installing on the other computer (it is also shown in the DeskView app).'
 } else {
     if (-not $PairCode) { $PairCode = $known }
     while (-not $PairCode -or $PairCode.Trim().ToUpper() -notmatch $codePattern) {
@@ -298,19 +258,124 @@ if ($Role -eq 'Server') {
         $PairCode = Read-Host '   This computer is a CLIENT. Enter the pairing code shown on the server'
     }
 }
-$handoff = [ordered]@{ Role = $Role; PairCode = $PairCode.Trim().ToUpper() }
-if ($ServerAddress) { $handoff.ServerAddress = $ServerAddress }
-$handoff | ConvertTo-Json | Set-Content (Join-Path $settingsDir 'setup.json') -Encoding UTF8
 
-# 4. Start now and at every sign-in.
+# A laptop's windows can only go onto the other computer's monitors through extra (virtual) screens: offer them.
+if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin -and -not (Test-ExtraScreensChosen)) {
+    $VirtualScreens = Ask-ExtraScreens
+}
+
+# 2. Administrator part - only when something is actually missing.
+$warnings = @()
+$rules = @(Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | % DisplayName)
+$wantScreens = $VirtualScreens -gt 0 -or ($VirtualScreens -eq 0 -and (Test-VirtualScreenDevice))
+$needAdmin = @($rulesWanted | ? { $rules -notcontains $_.Name }).Count -gt 0 -or $wantScreens -or ($ClassicEngine -and -not (Test-Path $engineGuiExe))
+if ($SkipAdmin) { Write-Host 'Step 1/4: administrator part skipped.' }
+elseif ($needAdmin) {
+    Write-Host 'Step 1/4: administrator approval for the firewall rules (a Windows prompt will appear)...'
+    $vsArg = if ($wantScreens) { $VirtualScreens } else { -1 }
+    $elevArgs = "-Elevated -VirtualScreens $vsArg" + $(if ($ClassicEngine) { ' -ClassicEngine' })
+    if (Run-Elevated $elevArgs) {
+        if ($VirtualScreens -ge 0) { Set-Content $extraScreensAsked "$VirtualScreens ok" }
+        if ($VirtualScreens -gt 0) { Arrange-VirtualScreens }
+    } else {
+        Write-Warning 'The administrator part did not fully succeed (see above).'
+        if ($VirtualScreens -gt 0) { $warnings += 'Extra screens were NOT added - run setup again to retry.' }
+    }
+} else {
+    Write-Host 'Step 1/4: firewall rules already in place.'
+    if ($VirtualScreens -eq 0) { Set-Content $extraScreensAsked '0 ok' }   # "none" needs nothing installed
+}
+
+# 3. FFmpeg: always the pinned, checksum-checked build next to the app (a different FFmpeg on PATH may lack what
+# DeskView needs, or be updated or removed later). Prepared beside the running app, swapped in below.
+function Test-FFmpeg([string]$exe) {
+    if (-not $exe -or -not (Test-Path $exe) -or -not (Test-Path (Join-Path (Split-Path $exe) 'ffplay.exe'))) { return $false }
+    $filters = & $exe -hide_banner -filters 2>$null | Out-String; $protocols = & $exe -hide_banner -protocols 2>$null | Out-String
+    ($filters -match '\bddagrab\b') -and ($protocols -match '(?m)^\s*srt\s*$')
+}
+New-Item -ItemType Directory -Force $installDir | Out-Null
+$ffDir = Join-Path $installDir 'ffmpeg'; $ffNew = Join-Path $installDir 'ffmpeg.new'; $ffStamp = 'deskview-pinned.txt'
+$ffCurrent = (Test-Path (Join-Path $ffDir $ffStamp)) -and ((Get-Content (Join-Path $ffDir $ffStamp) -Raw).Trim() -eq $ffName) -and (Test-FFmpeg (Join-Path $ffDir 'ffmpeg.exe'))
+if (-not $ffCurrent) {
+    Write-Host 'Step 2/4: getting FFmpeg (pinned build, checked)...'
+    # a copy kept from an earlier setup (or -FFmpegZip for a PC without internet) is used when its checksum matches
+    $zip = if ($FFmpegZip) { $FFmpegZip } else { Join-Path $env:TEMP $ffName }
+    $ok = (Test-Path $zip) -and ((Get-FileHash $zip -Algorithm SHA256).Hash -eq $ffSha256)
+    if (-not $ok -and $FFmpegZip) { throw "'$FFmpegZip' is not the FFmpeg build DeskView needs ($ffName, checksum mismatch)." }
+    if (-not $ok) {
+        Write-Host '        downloading (82 MB, once)...'
+        try { [Net.WebRequest]::DefaultWebProxy.Credentials = [Net.CredentialCache]::DefaultNetworkCredentials } catch { }   # company proxies
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        foreach ($u in $ffUrls) {
+            try {
+                (New-Object Net.WebClient).DownloadFile($u, $zip)
+                if ((Get-FileHash $zip -Algorithm SHA256).Hash -eq $ffSha256) { $ok = $true; break }
+                Write-Warning "FFmpeg from $u does not match its checksum - not used."
+            } catch { Write-Warning "FFmpeg download from $u failed: $($_.Exception.Message)" }
+        }
+    }
+    if (-not $ok) { throw "Could not get FFmpeg (download or checksum failed). Download $ffName from $($ffUrls[0]) and run setup with -FFmpegZip <that file>. DeskView was not changed." }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    if (Test-Path $ffNew) { [IO.Directory]::Delete($ffNew, $true) }
+    New-Item -ItemType Directory -Force $ffNew | Out-Null
+    $z = [IO.Compression.ZipFile]::OpenRead($zip)
+    try {
+        # only what DeskView runs: ffmpeg, ffplay and their libraries
+        foreach ($e in $z.Entries | ? { $_.FullName -match '/bin/[^/]+\.(exe|dll)$' -and $_.Name -ne 'ffprobe.exe' }) {
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($e, (Join-Path $ffNew $e.Name), $true)
+        }
+    } finally { $z.Dispose() }
+    if (-not (Test-FFmpeg (Join-Path $ffNew 'ffmpeg.exe'))) { [IO.Directory]::Delete($ffNew, $true); throw 'FFmpeg cannot capture the screen or use SRT on this PC. DeskView was not changed.' }
+    Set-Content (Join-Path $ffNew $ffStamp) $ffName
+} else { Write-Host 'Step 2/4: FFmpeg already in place.' }
+
+# 4. Stop, update and start again. If anything fails here, whatever DeskView is in place is started again anyway.
+Write-Host "Step 3/4: installing to $installDir"
 $app = Join-Path $installDir 'DeskView.ps1'
-if ($NoStart) { Write-Host 'Step 4/4: not started (-NoStart).'; exit 0 }
-Write-Host 'Step 4/4: starting DeskView and adding it to startup'
-$sh = New-Object -ComObject WScript.Shell
-$sc = $sh.CreateShortcut($startupLink); $sc.TargetPath = 'powershell.exe'
-$sc.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$app`" -Tray"; $sc.WindowStyle = 7; $sc.Description = 'DeskView'; $sc.Save()
-Start-Process powershell -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$app`"" -WindowStyle Hidden
+if (-not $NoStart) { Stop-DeskView }
+try {
+    $src = (Resolve-Path $Source).Path.TrimEnd('\'); $dst = (Resolve-Path $installDir).Path.TrimEnd('\')
+    if ($src -ne $dst) {
+        # mirror, but keep FFmpeg
+        $null = robocopy $src $dst /MIR /XD ffmpeg ffmpeg.new /NFL /NDL /NJH /NJS /NP
+        if ($LASTEXITCODE -ge 8) { throw "Copying DeskView failed (robocopy $LASTEXITCODE)." }
+    }
+    if (Test-Path $ffNew) {
+        for ($i = 0; $i -lt 10 -and (Test-Path $ffDir); $i++) {   # its players may take a moment to exit
+            try { [IO.Directory]::Delete($ffDir, $true) } catch { Start-Sleep -Milliseconds 500 }
+        }
+        if (Test-Path $ffDir) { throw "The old FFmpeg in $ffDir is still in use - close DeskView and run setup again." }
+        # the virus scanner may still be reading the new files for a moment: try again, else copy them over
+        for ($i = 0; $i -lt 20 -and (Test-Path $ffNew); $i++) {
+            try { [IO.Directory]::Move($ffNew, $ffDir) } catch { Start-Sleep -Milliseconds 500 }
+        }
+        if (Test-Path $ffNew) {
+            $null = robocopy $ffNew $ffDir /E /MOVE /R:5 /W:1 /NFL /NDL /NJH /NJS /NP
+            if (-not (Test-Path (Join-Path $ffDir 'ffmpeg.exe'))) { throw "Could not put FFmpeg in place ($ffDir)." }
+        }
+    }
+    # role and pairing are handed to DeskView in setup.json, which it applies at its next start
+    $handoff = [ordered]@{ Role = $Role; PairCode = $PairCode.Trim().ToUpper() }
+    if ($ServerAddress) { $handoff.ServerAddress = $ServerAddress }
+    $handoff | ConvertTo-Json | Set-Content (Join-Path $settingsDir 'setup.json') -Encoding UTF8
+} finally {
+    if (-not $NoStart -and (Test-Path $app)) {
+        Write-Host 'Step 4/4: starting DeskView and adding it to startup'
+        $sh = New-Object -ComObject WScript.Shell
+        $sc = $sh.CreateShortcut($startupLink); $sc.TargetPath = 'powershell.exe'
+        $sc.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$app`" -Tray"; $sc.WindowStyle = 7; $sc.Description = 'DeskView'; $sc.Save()
+        Start-Process powershell -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$app`"" -WindowStyle Hidden
+    }
+}
+if ($NoStart) { Write-Host 'Step 4/4: not started (-NoStart).' }
 Write-Host ''
-Write-Host 'Done. DeskView lives in the tray (bottom-right).' -ForegroundColor Green
+if ($Role -eq 'Server') {
+    Write-Host "   This computer is the SERVER. Pairing code:  $($PairCode.Trim().ToUpper())" -ForegroundColor Green
+    Write-Host '   Enter it when installing on the other computer (it is also shown in the DeskView app).'
+}
+foreach ($w in $warnings) { Write-Host "   $w" -ForegroundColor Yellow }
+if ($NoStart) { exit 0 }
+if ($warnings) { Write-Host 'Done, with the warnings above. DeskView lives in the tray (bottom-right).' -ForegroundColor Yellow }
+else { Write-Host 'Done. DeskView lives in the tray (bottom-right).' -ForegroundColor Green }
 if ($Role -eq 'Server') { Write-Host '   Push the mouse off the edge facing the other computer to work on it; Ctrl+Alt+1..9 shows it on a monitor, Ctrl+Alt+0 hides it.' }
 else { Write-Host "   Ctrl+Alt+1..9 shows the server's monitor 1..9 here and lets you control it, Ctrl+Alt+0 comes back." }
