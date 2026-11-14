@@ -77,7 +77,7 @@ namespace DeskView
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
         public Size? RemoteRes; public string RemoteRect; public bool Passive; public DeskViewPictureHost Host; public int AdoptFails; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
-        public DateTime LastStart = DateTime.MinValue;
+        public DateTime LastStart = DateTime.MinValue, ShownAt = DateTime.MinValue;
         public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
 
@@ -219,6 +219,8 @@ namespace DeskView
         /// <summary>A picture of the other computer's screen n stopped (closed, or its player died): the other computer
         /// should restart that screen's listener.</summary>
         public event Action<int> ViewerGone;
+        /// <summary>Where the other computer's screen n is and how big (it tells us over the link), or null.</summary>
+        public Func<int, Rectangle?> RemoteScreen;
         void OnViewerGone(Player pl) { if (!pl.EverLive) return; var h = ViewerGone; if (h != null) h(pl.RemoteN); }
 
         // -------------------------------------------------------------------------------------------------- players
@@ -342,10 +344,10 @@ namespace DeskView
                     if (pl.AdoptFails < 2)
                     {
                         if (pl.Host == null) pl.Host = new DeskViewPictureHost(pl.Screen.Bounds);
-                        if (pl.Host.Adopt(w)) { pl.Passive = true; changed = true; }
+                        if (pl.Host.Adopt(w)) { pl.Passive = true; pl.ShownAt = DateTime.Now; changed = true; }
                         else if (++pl.AdoptFails >= 2) Log.Write("could not hold the picture for " + pl.Key + " in DeskView's own window - showing it as is");
                     }
-                    else { DeskViewPortal.MakePassive(w); pl.Passive = true; changed = true; }   // fallback: the player's own window
+                    else { DeskViewPortal.MakePassive(w); pl.Passive = true; pl.ShownAt = DateTime.Now; changed = true; }   // fallback: the player's own window
                 }
             }
             else if (pl.Host != null && pl.AdoptFails < 2 && !pl.Host.Holding)
@@ -356,8 +358,16 @@ namespace DeskView
             }
             if (pl.RemoteRes == null)
             {
-                // read once per start: size and position of the other computer's screen (in the report's header)
+                // The picture is there once the player shows its window (it does at the first frame). Its size and
+                // position on the other computer: from the player's report when it has them, else as the other
+                // computer told us over the link; an older DeskView that tells nothing: this monitor's size.
                 var info = ReadInfo(pl.Report);
+                if (info == null && pl.Passive)
+                {
+                    var r = RemoteScreen != null ? RemoteScreen(pl.RemoteN) : null;
+                    if (r.HasValue) info = new Info { size = r.Value.Size, rect = r.Value.X + "," + r.Value.Y + "," + r.Value.Width + "," + r.Value.Height };
+                    else if ((DateTime.Now - pl.ShownAt).TotalSeconds > 2) info = new Info { size = pl.Screen.Bounds.Size, rect = null };
+                }
                 if (info != null)
                 {
                     pl.RemoteRes = info.size; pl.RemoteRect = info.rect; pl.Fails = 0; pl.EverLive = true; changed = true;

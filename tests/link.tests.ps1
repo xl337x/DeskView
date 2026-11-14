@@ -98,6 +98,13 @@ try {
     Check 'the viewer asks for a fresh listener for its screen ("RS"), nonsense is ignored' (($got -join ',') -eq '3') ($got -join ',')
     $agent.RequestSenderRestart(2); $rs = Recv
     Check 'and the agent can ask the viewer the same (server viewing the laptop)' ($rs -eq '<RS 2') $rs
+    Send 'SR 1:0,0,1920,1080;2:-5760,0,1920,1080'; Start-Sleep -Milliseconds 150
+    $r2 = [DvProto]::ScreenFromList($agent.RemoteScreenList, 2)
+    Check 'the other computer says where its screens are ("SR"): screen 2 at -5760,0 1920x1080' ($r2 -ne $null -and $r2.X -eq -5760 -and $r2.Width -eq 1920) "$r2"
+    Send 'SR 1:0,0,1920,1080;evil'; Send ('SR ' + ((1..11 | % { "$($_):0,0,10,10" }) -join ';')); Start-Sleep -Milliseconds 150
+    Check 'a malformed or oversized screen list is refused (the last good one is kept)' ($agent.RemoteScreenList -eq '1:0,0,1920,1080;2:-5760,0,1920,1080') $agent.RemoteScreenList
+    $agent.ReportScreens('1:0,0,2560,1440'); $sr = Recv
+    Check 'the agent tells the viewer its screens too' ($sr -eq '<SR 1:0,0,2560,1440') $sr
     Send 'U'; Start-Sleep -Milliseconds 100
     Check '"U" (the viewer stopped forwarding) is understood' ($agent.Client -ne '')
 

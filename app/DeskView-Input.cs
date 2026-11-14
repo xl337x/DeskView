@@ -173,6 +173,21 @@ public static class DvClip
 /// <summary>Authenticated, encrypted framing shared by agent and forwarder.</summary>
 public static class DvProto
 {
+    /// <summary>A screen list as sent in "SR": up to 10 entries "n:x,y,w,h" separated by ";".</summary>
+    public static bool IsScreenList(string s) { return s != null && s.Length <= 400 && System.Text.RegularExpressions.Regex.IsMatch(s, @"^\d{1,2}:-?\d{1,6},-?\d{1,6},\d{1,5},\d{1,5}(;\d{1,2}:-?\d{1,6},-?\d{1,6},\d{1,5},\d{1,5}){0,9}$"); }
+    /// <summary>Screen n from such a list, or null.</summary>
+    public static System.Drawing.Rectangle? ScreenFromList(string s, int n)
+    {
+        if (!IsScreenList(s)) return null;
+        foreach (var e in s.Split(';'))
+        {
+            var kv = e.Split(':'); if (int.Parse(kv[0]) != n) continue;
+            var v = kv[1].Split(',');
+            return new System.Drawing.Rectangle(int.Parse(v[0]), int.Parse(v[1]), int.Parse(v[2]), int.Parse(v[3]));
+        }
+        return null;
+    }
+
     public const int NonceLen = 16, MacLen = 32, MaxFrame = 1024, MaxFileFrame = 60000;
     static readonly byte[] Salt = Encoding.ASCII.GetBytes("DeskView-pairing-v2");
     static readonly Dictionary<string, byte[]> keyCache = new Dictionary<string, byte[]>();
@@ -313,6 +328,10 @@ public class DeskViewAgent
     public readonly ConcurrentQueue<int> SenderRestarts = new ConcurrentQueue<int>();
     /// <summary>This computer's picture of the other computer's screen n stopped: it should restart that listener.</summary>
     public void RequestSenderRestart(int n) { Send("RS " + n); }
+    /// <summary>The other computer's screens: "n:x,y,w,h;..." (where each sits and its size), or null if not told.</summary>
+    public volatile string RemoteScreenList;
+    /// <summary>Tells the other computer where this computer's shared screens are and how big.</summary>
+    public void ReportScreens(string list) { Send("SR " + list); }
 
     string edgeIn;                               // side the pointer came in from while the other machine drives it (null = not)
     string lastClip;                             // last text synced either way: never echo it back
@@ -633,6 +652,7 @@ public class DeskViewAgent
                 }
                 case "U": ReleaseAll(); break;                         // the viewer stopped sending input: let go of everything
                 case "RS": { int n; if (p.Length > 1 && int.TryParse(p[1], out n) && n >= 1 && n <= 10) SenderRestarts.Enqueue(n); break; }
+                case "SR": if (p.Length > 1 && DvProto.IsScreenList(p[1])) RemoteScreenList = p[1]; break;
                 case "CQ": SendClipboardIfChanged(); break;            // the viewer's keyboard came back to it: our clipboard goes along
                 case "P": Send("P"); break;                            // keep-alive, answered so a dead link is noticed
             }
@@ -1055,6 +1075,10 @@ public class DeskViewForwarder
     public void RequestSenderRestart(int n) { Enqueue("RS " + n); }
     /// <summary>Screens of this computer whose viewer went away: restart their listeners (the app takes them).</summary>
     public readonly ConcurrentQueue<int> SenderRestarts = new ConcurrentQueue<int>();
+    /// <summary>The other computer's screens: "n:x,y,w,h;..." (where each sits and its size), or null if not told.</summary>
+    public volatile string RemoteScreenList;
+    /// <summary>Tells the other computer where this computer's shared screens are and how big.</summary>
+    public void ReportScreens(string list) { Enqueue("SR " + list); }
 
     void OnAgentMessage(string msg)
     {
@@ -1065,6 +1089,7 @@ public class DeskViewForwarder
         {
             case "V": int v; if (p.Length > 1 && int.TryParse(p[1], out v)) agentVersion = v; break;
             case "RS": int rs; if (p.Length > 1 && int.TryParse(p[1], out rs) && rs >= 1 && rs <= 10) SenderRestarts.Enqueue(rs); break;
+            case "SR": if (p.Length > 1 && DvProto.IsScreenList(p[1])) RemoteScreenList = p[1]; break;
             case "P": break;
             case "L": int a; if (p.Length > 1 && int.TryParse(p[1], out a)) ComeBack(Math.Max(0, Math.Min(65535, a))); break;
             case "CB": clipIn = new StringBuilder(); break;

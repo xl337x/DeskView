@@ -134,5 +134,21 @@ $oldDir = $env:DESKVIEW_APPDIR; $env:DESKVIEW_APPDIR = $fakeApp
 $found = (& $T 'DeskView.Tools')::Find('ffmpeg')
 $env:DESKVIEW_APPDIR = $oldDir; [IO.Directory]::Delete($fakeApp, $true)
 Check 'FFmpeg next to the app is used first (setup''s pinned build), not one on PATH' ($found -eq (Join-Path $fakeApp 'ffmpeg\ffmpeg.exe')) $found
+# ---------------------------------------------------------------------------------------------- live without report text
+# The player only writes the stream's size into its report while its status line is on (it is off: the report would
+# grow ~7 MB an hour). A picture must count as live once the player shows it, sized as the other computer told us.
+if ($ffplay) {
+    $sLive = [Activator]::CreateInstance($Settings); $mLive = [Activator]::CreateInstance((& $T 'DeskView.Media'), @($sLive))
+    $mLive.RemoteScreen = [Func[int, Nullable[System.Drawing.Rectangle]]] { param($n) if ($n -eq 2) { [Nullable[System.Drawing.Rectangle]](New-Object System.Drawing.Rectangle -5760, 0, 1920, 1080) } else { $null } }
+    $small = @([System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.Width * $_.Bounds.Height })[0]
+    $plL = [Activator]::CreateInstance((& $T 'DeskView.Player')); $plL.Key = 'QA'; $plL.Screen = $small; $plL.RemoteN = 2; $plL.Report = Join-Path $env:TEMP "dv-qa-noreport-$PID.log"
+    $plL.P = $start.Invoke($null, @($ffplay, "-hide_banner -loglevel error -nostats -noborder -left $($small.Bounds.X) -top $($small.Bounds.Y) -x 320 -y 240 -window_title DeskView -f lavfi -i testsrc=size=320x240:rate=30", $null))
+    $plL.LastStart = Get-Date
+    $mLive.Players['QA'] = $plL
+    $end = (Get-Date).AddSeconds(8); while ((Get-Date) -lt $end -and -not $plL.Live) { [void]$mLive.ServicePlayers('127.0.0.1'); [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
+    Check 'a picture is live once shown, sized and placed as the other computer told (no report text needed)' ($plL.Live -and $plL.RemoteRect -eq '-5760,0,1920,1080' -and $plL.RemoteRes.Width -eq 1920) "live=$($plL.Live) rect=$($plL.RemoteRect)"
+    $mLive.StopPlayers()
+    Check 'stopping it closes the player and the window holding it' ($plL.P -eq $null -and $plL.Host -eq $null)
+}
 "== app: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

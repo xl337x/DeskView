@@ -25,6 +25,7 @@ namespace DeskView
             TlsEnabled = true;
             CheckPeers = true;
             Screens = new Dictionary<string, int>();
+            SmartShown = new Dictionary<string, int>(); SmartReleased = new List<int>();
             Profile = "Auto";
             Interactive = true;
             Picture = "Fit";
@@ -102,6 +103,11 @@ namespace DeskView
         /// <summary>Smart screens: a monitor shows the other computer's extra screen N by itself while that screen holds
         /// windows (screen 2 -> monitor 1, screen 3 -> monitor 2, ...), and gives itself back when it is empty.</summary>
         public bool SmartScreens { get; set; }
+        /// <summary>Smart screens' memory, kept across restarts: monitors it is showing a screen on (it gives them
+        /// back when that screen empties), and screens the user gave back while they held windows (left alone until
+        /// they empty).</summary>
+        public Dictionary<string, int> SmartShown { get; set; }
+        public List<int> SmartReleased { get; set; }
         /// <summary>"Classic" = the separate keyboard/mouse engine; "DeskView" = DeskView's own encrypted switching and clipboard.</summary>
         public string InputEngine { get; set; }
         /// <summary>True when DeskView turned Mouse Keys on (so turning the option off undoes only our change).</summary>
@@ -154,6 +160,7 @@ namespace DeskView
                     var s = new JavaScriptSerializer().Deserialize<AppSettings>(text);
                     if (s == null) throw new FormatException("empty");
                     s.Screens = s.Screens ?? new Dictionary<string, int>();
+                    s.SmartShown = s.SmartShown ?? new Dictionary<string, int>(); s.SmartReleased = s.SmartReleased ?? new List<int>();
                     // Settings from before the engine choice existed: that computer was set up with the classic
                     // engine, and the other computer still uses it - keep it (switching both is the user's call).
                     if (!text.Contains("\"InputEngine\"")) s.InputEngine = "Classic";

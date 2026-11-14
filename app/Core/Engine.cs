@@ -42,6 +42,10 @@ namespace DeskView
             // a picture of the other computer's screen stopped: it restarts that screen's listener at once (whichever way
             // the link runs: the server answers through its agent, the client through its forwarder)
             Media.ViewerGone += n => { if (S.Role == Role.Server) agent.RequestSenderRestart(n); else forwarder.RequestSenderRestart(n); };
+            Media.RemoteScreen = n => DvProto.ScreenFromList(S.Role == Role.Server ? agent.RemoteScreenList : forwarder.RemoteScreenList, n);
+            // smart screens' memory survives restarts (else a restart would grab monitors the user gave back)
+            foreach (var n in S.SmartReleased) userReleased.Add(n);
+            foreach (var kv in S.SmartShown) { int cur; if (S.Screens.TryGetValue(kv.Key, out cur) && cur == kv.Value) autoShown[kv.Key] = kv.Value; }
         }
 
         // ------------------------------------------------------------------------------------------------- state
@@ -262,7 +266,14 @@ namespace DeskView
         {
             if (n > 0) foreach (var k in S.Screens.Where(kv => kv.Value == n).Select(kv => kv.Key).ToList()) S.Screens.Remove(k);   // one stream, one monitor
             if (n <= 0) S.Screens.Remove(monitor); else { S.Screens[monitor] = n; LastOn = monitor; }
-            S.Save(); SyncPlayers();
+            KeepSmartMemory(); S.Save(); SyncPlayers();
+        }
+
+        /// <summary>Copies smart screens' memory into the settings (saved with them).</summary>
+        void KeepSmartMemory()
+        {
+            S.SmartReleased = userReleased.OrderBy(x => x).ToList();
+            S.SmartShown = new Dictionary<string, int>(autoShown);
         }
 
         /// <summary>Hotkey / command: server - put the other computer's screen 1 on monitor "want"; client - view server screen.</summary>
@@ -273,7 +284,7 @@ namespace DeskView
             if (string.IsNullOrEmpty(want) || want.Equals("off", StringComparison.OrdinalIgnoreCase))
             {
                 if (S.Role == Role.Server) { foreach (var v in S.Screens.Values) userReleased.Add(v); S.Screens.Clear(); autoShown.Clear(); } else S.ClientView = 0;
-                S.Save(); SyncPlayers(); OnNotice(S.Role == Role.Server ? "Other computer's screens off" : "Back to this computer", false); return;
+                Log.Write("all monitors given back"); KeepSmartMemory(); S.Save(); SyncPlayers(); OnNotice(S.Role == Role.Server ? "Other computer's screens off" : "Back to this computer", false); return;
             }
             int n;
             if (S.Role == Role.Server)
@@ -358,8 +369,26 @@ namespace DeskView
             {
                 lastOccupied = list; lastOccupiedSent = DateTime.Now;
                 forwarder.ReportScreenCount(screens.Length);
+                forwarder.ReportScreens(ScreenList(screens));
                 forwarder.ReportOccupied(list);
             }
+        }
+
+        /// <summary>"n:x,y,w,h;..." for the screens this computer shares (in the order they are offered).</summary>
+        static string ScreenList(Screen[] screens)
+        {
+            return string.Join(";", screens.Select((s, i) => string.Format("{0}:{1},{2},{3},{4}", i + 1, s.Bounds.X, s.Bounds.Y, s.Bounds.Width, s.Bounds.Height)).Take(10).ToArray());
+        }
+        string lastScreensSent; DateTime lastScreensAt = DateTime.MinValue;
+
+        /// <summary>Server: tell the client where this computer's screens are (it shows them, with Ctrl+Alt+1..9).</summary>
+        void ReportScreensToClient()
+        {
+            if (S.Role != Role.Server || string.IsNullOrEmpty(agent.Client)) { lastScreensSent = null; return; }
+            var list = ScreenList(Tools.SharedScreens());
+            if (list == lastScreensSent && (DateTime.Now - lastScreensAt).TotalSeconds < 10) return;
+            lastScreensSent = list; lastScreensAt = DateTime.Now;
+            agent.ReportScreens(list);
         }
 
         /// <summary>Server: show the client's extra screen N on monitor N-1 while it holds windows; give it back 3 s after
@@ -369,6 +398,7 @@ namespace DeskView
             if (S.Role != Role.Server || !S.SmartScreens) return;
             var occ = agent.OccupiedScreens;
             if (occ == null) return;
+            int releasedBefore = userReleased.Count;
             var busy = new HashSet<int>(occ.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => { int n; return int.TryParse(x, out n) ? n : 0; }).Where(n => n >= 2));
             if (occ != lastBusyLogged) { lastBusyLogged = occ; Log.Write("other computer's screens with windows: " + (occ.Length > 0 ? occ : "none")); }
             userReleased.RemoveWhere(n => !busy.Contains(n));   // emptied since the user gave it back: smart again
@@ -382,7 +412,7 @@ namespace DeskView
                 if (smartFailed.TryGetValue(n, out failedAt) && (DateTime.Now - failedAt).TotalMinutes < 5) continue;   // its picture never came: not again for a while
                 var mon = monitors[n - 2];
                 if (S.Screens.ContainsKey(mon)) continue;                              // that monitor shows something the user chose
-                ApplyScreen(mon, n); autoShown[mon] = n; emptySince.Remove(mon);
+                autoShown[mon] = n; emptySince.Remove(mon); ApplyScreen(mon, n);
                 var who = string.IsNullOrEmpty(S.RemoteName) ? "The other computer's" : S.RemoteName + "'s";
                 OnNotice(string.Format("{0} screen {1} is now on monitor {2} (a window went there)", who, n, n - 1), false);
             }
@@ -395,6 +425,7 @@ namespace DeskView
                 emptySince.Remove(kv.Key); autoShown.Remove(kv.Key);
                 ApplyScreen(kv.Key, 0);   // empty for 3 s: the monitor is this computer's again
             }
+            if (userReleased.Count != releasedBefore) { KeepSmartMemory(); S.Save(); }
         }
 
         // ------------------------------------------------------------------------------------------------- the guide
@@ -597,6 +628,7 @@ namespace DeskView
                 ServiceFiles();
                 ServiceToast();
                 ReportOccupied();
+                ReportScreensToClient();
                 ServiceSmartScreens();
                 int restart;
                 while (agent.SenderRestarts.TryDequeue(out restart)) { Log.Write("screen " + restart + ": its viewer went away - fresh listener"); Media.RestartSender(restart); }
