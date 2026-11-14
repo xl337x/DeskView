@@ -56,5 +56,6 @@ if ($Uninstall) { $a += '-Uninstall' }
 & powershell @a
 $code = $LASTEXITCODE
 try { [IO.Directory]::Delete($work, $true) } catch { }
-# run as a file: report the result as the exit code; pasted (irm | iex): never close the user's PowerShell window
-if ($MyInvocation.MyCommand.Path) { exit $code } elseif ($code -ne 0) { Write-Host "DeskView setup did not finish (code $code) - see above." -ForegroundColor Yellow }
+# never "exit": pasted (irm | iex) that would close the user's PowerShell window (or end their script)
+$global:LASTEXITCODE = $code
+if ($code -ne 0) { Write-Host "DeskView setup did not finish (code $code) - see above." -ForegroundColor Yellow }

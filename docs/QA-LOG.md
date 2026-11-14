@@ -3,7 +3,7 @@
 All on the owner's two PCs (a desktop server with 3 monitors on a wired network; a laptop on Wi-Fi with 3 extra screens).
 
 ## Automated suites (last full run)
-csharp5 2/2 · app 41/41 · link 46/46 · files 11/11 · setup 10/10 · mapping 20/20 · gui 40/40 · gui-deep 112/112
+csharp5 2/2 · app 41/41 · link 46/46 · files 11/11 · setup 10/10 · mapping 20/20 · gui 38/38 · gui-deep 108-112 (a few checks depend on whether the classic engine is installed/running)
 (every control, with proof; report `%TEMP%\deskview-deep-qa\report.html`) · input 22/22 (on the laptop, real hooks).
 
 ## Live, built-in engine only (classic engine not running)

@@ -339,7 +339,7 @@ if (-not $ffCurrent) {
 }
 
 # 4. Stop, update and start again. If anything fails here, whatever DeskView is in place is started again anyway.
-Write-Host "Step 3/4: installing to $installDir"
+Write-Host "Step 3/4: installing to $($installDir.Replace($env:LOCALAPPDATA, '%LOCALAPPDATA%'))"
 $app = Join-Path $installDir 'DeskView.ps1'
 if (-not $NoStart) { Stop-DeskView }
 try {

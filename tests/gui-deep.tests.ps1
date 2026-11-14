@@ -128,7 +128,7 @@ $SettingsType = T 'DeskView.AppSettings'
 foreach ($script:role in 'Server', 'Client') {
     $st = [Activator]::CreateInstance($SettingsType)
     $st.Role = [Enum]::Parse((T 'DeskView.Role'), $script:role); $st.ComputerName = 'QA-DESK'; $st.RemoteName = 'LAPTOP'; $st.PairCode = 'K7MPQ3XR'
-    $st.SetupDone = $true; $st.InputEngine = 'Classic'; $st.ServerAddress = $env:DV_SERVER_IP; $st.VideoPort = 9100; $st.ControlPort = 9102; $st.Save()
+    $st.SetupDone = $true; $st.InputEngine = 'Classic'; $st.ServerAddress = '10.0.0.10'; $st.VideoPort = 9100; $st.ControlPort = 9102; $st.Save()
     $engine = [Activator]::CreateInstance((T 'DeskView.Engine'), @($st))
     $script:form = [Activator]::CreateInstance((T 'DeskView.UI.MainForm'), @($engine)); $script:form.Size = New-Object Drawing.Size 1000, 760
     $script:form.Show(); Pump 400

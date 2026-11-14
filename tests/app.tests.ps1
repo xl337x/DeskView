@@ -63,7 +63,7 @@ try {
     Check 'writing identical settings reports "unchanged" (no needless engine restart)' (-not $changed)
     $s2.ComputerName = 'DE"SK ;x'; [void]$Core::WriteConfig($s2, $null)
     Check 'unsafe characters stripped from computer names' ([IO.File]::ReadAllText($cfgPath) -match '(?m)^computerName=DESKx\s*$')
-    $client = [Activator]::CreateInstance($Settings); $client.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Client'); $client.ServerAddress = $env:DV_SERVER_IP; $client.ComputerName = 'lap'
+    $client = [Activator]::CreateInstance($Settings); $client.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Client'); $client.ServerAddress = '10.0.0.10'; $client.ComputerName = 'lap'
     [void]$Core::WriteConfig($client, $null); $ini = [IO.File]::ReadAllText($cfgPath)
     Check 'client settings: client mode, server address, no portal, engine keeps admin rights' ($ini -match '(?m)^coreMode=1' -and $ini -match '(?m)^remoteHost=10\.0\.0\.10' -and $ini -notmatch 'portal=' -and $ini -notmatch 'elevate=false')
 } finally { foreach ($p in $cfgPath, $layoutPath) { if ($saved.ContainsKey($p)) { [IO.File]::WriteAllText($p, $saved[$p]) } } }

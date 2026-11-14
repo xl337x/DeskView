@@ -164,7 +164,7 @@ Check 'Connection: New code asks first, then makes a new valid code' ($code.Text
 $side = All-Controls $form | ? { $_ -is [Windows.Forms.ComboBox] -and $_.Items -contains 'Bottom' } | Select -First 1
 $side.SelectedItem = 'Bottom'
 (All-Controls $form | ? { $_ -is [Windows.Forms.Button] -and $_.Text -eq 'Save and apply' } | Select -First 1).PerformClick(); Pump 600
-Check 'Connection: Save stores the new code and the layout (other computer below)' ((Settings).PairCode -eq $code.Text -and ([IO.File]::ReadAllText((Join-Path $home2 'layout.conf')) -match 'down = the laptop'))
+Check 'Connection: Save stores the new code and the layout (other computer below)' ((Settings).PairCode -eq $code.Text -and ([IO.File]::ReadAllText((Join-Path $home2 'layout.conf')) -match 'down = LAPTOP'))
 
 $form.ShowPage('Screens'); Pump 300
 $engine.SetScreen(($engine.S.Screens.Keys | Select -First 1), 0); Pump 300

@@ -25,7 +25,7 @@ try {
     Check 'a wrong offline FFmpeg zip is refused and the install is left as it was' ($LASTEXITCODE -ne 0 -and $o2 -match 'checksum' -and (Test-Path $ff) -and (Get-ChildItem $env:DESKVIEW_INSTALL -Recurse -File | Measure-Object).Count -eq ($before - 1)) (($o2 -split "`n" | ? { $_ -match 'checksum' } | Select -First 1))
     Set-Content $stamp 'ffmpeg-n9.0.2-57-gd838f9f9ae-win64-gpl-shared-9.0.zip'
     $h = Get-Content (Join-Path $env:DESKVIEW_HOME 'setup.json') -Raw | ConvertFrom-Json
-    Check 'role, pairing code (normalised) and server address handed to the app' ($h.Role -eq 'Client' -and $h.PairCode -eq 'K7MPQ3XR' -and $h.ServerAddress -eq $env:DV_SERVER_IP) ($h | ConvertTo-Json -Compress)
+    Check 'role, pairing code (normalised) and server address handed to the app' ($h.Role -eq 'Client' -and $h.PairCode -eq 'K7MPQ3XR' -and $h.ServerAddress -eq '10.0.0.10') ($h | ConvertTo-Json -Compress)
     $load = & powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$(Join-Path $env:DESKVIEW_INSTALL 'DeskView.ps1')' -LoadOnly; if ([DeskView.Program]) { 'loaded' }" 2>&1 | Out-String
     Check 'the installed copy compiles and loads with Windows'' own compiler' ($load -match 'loaded') $load.Trim()
     # reinstall over it: keeps FFmpeg, removes files that no longer exist in the app
