@@ -10,6 +10,18 @@ Start here, then read in this order:
 2. `docs/DECISIONS.md`   - every design judgement made so far and WHY (read before changing a mechanism).
 3. `docs/QA-LOG.md`      - what was measured/proven on real hardware, and how to repeat it.
 4. `docs/OPEN-ISSUES.md` - known problems, what to fix next, ideas.
+5. `docs/REVIEWS.md`     - both critic/judge review rounds verbatim: every finding, verdict, fix, and what was
+   rejected and why (the "criticism" record - check it before re-proposing something).
+6. `docs/HISTORY.md`     - what the owner asked for over time, what was delivered, machine state at the end.
+7. `tests/live/README.md` - the scripts that drive live QA on the two real PCs.
+
+## Resuming work in a new session (checklist)
+1. Read the docs above; `git log --oneline -20` for the latest changes.
+2. Run `tests\run-all.ps1` - everything must pass before changing anything.
+3. Take the top item of `docs/OPEN-ISSUES.md` ("To verify next") unless the owner asks otherwise.
+4. After a fix: test, live-prove if it touches pictures/input (`tests/live`), record numbers in QA-LOG, the reason in
+   DECISIONS, update OPEN-ISSUES, commit as xl337x, push `next` (laptop installs it) and `main`.
+5. For bigger changes: run independent critic agents + one judge (as in REVIEWS.md) before calling it done.
 
 ## Rules for working on this repo (non-negotiable, from the owner)
 - Commit as `xl337x <144266550+xl337x@users.noreply.github.com>` only. No AI attribution, no Co-Authored-By lines.
@@ -59,9 +71,9 @@ tests\*.tests.ps1           run-all.ps1 runs them; input.tests must run on a mac
   `DESKVIEW_HOME` / `DESKVIEW_INSTALL` (test folders).
 - Branches: `next` = what the test laptop installs; `main` = released.
 
-## The two test machines (owner's setup)
-- Server "SERVER-PC": 3 monitors (DISPLAY7 primary 0..1919, DISPLAY2 1920..3839, DISPLAY1 3840..5759), wired,
-  Intel Iris Xe (h264_qsv). Managed PC (company-managed, ASR rules).
-- Client "laptop": laptop, Wi-Fi, Intel UHD + NVIDIA, 3 virtual extra screens to the LEFT of its panel
-  (screen 1 = panel, 2/3/4 at x=-5760/-3840/-1920). Reached for QA over SSH (key `ssh-key`, user laptop-user);
-  GUI actions there run through a scheduled task in the signed-in session (see docs/QA-LOG.md).
+## The two test machines (shapes only - never write their names, users or addresses into the repo)
+- Server: desktop, 3 monitors side by side (main one on the left), wired network, Intel GPU (h264_qsv encoder),
+  company-managed PC (security policies apply - never try to bypass them).
+- Client: laptop on Wi-Fi, Intel + NVIDIA GPUs, 3 virtual extra screens to the LEFT of its panel (screen 1 = panel,
+  screens 2/3/4 to its left). Reached for QA over SSH (host, user and key come from `DV_LAPTOP`, `DV_SSHKEY`);
+  GUI actions there run through a scheduled task in the signed-in session (see `tests/live/README.md`).

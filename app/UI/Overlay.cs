@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 namespace DeskView.UI
 {
-    /// <summary>The strip on one monitor: "laptop · screen 3" + Give back + All back.</summary>
+    /// <summary>The strip on one monitor: "LAPTOP · screen 3" + Give back + All back.</summary>
     public class MonitorStrip : Form
     {
         public const int StripHeight = 30;

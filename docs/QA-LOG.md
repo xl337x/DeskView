@@ -1,6 +1,6 @@
 # QA log - what was proven, with numbers
 
-All on the owner's two PCs (server SERVER-PC, 3 monitors, wired; laptop laptop, Wi-Fi, 3 extra screens).
+All on the owner's two PCs (a desktop server with 3 monitors on a wired network; a laptop on Wi-Fi with 3 extra screens).
 
 ## Automated suites (last full run)
 csharp5 2/2 · app 41/41 · link 46/46 · files 11/11 · setup 10/10 · mapping 20/20 · gui 40/40 · gui-deep 112/112
@@ -33,7 +33,7 @@ csharp5 2/2 · app 41/41 · link 46/46 · files 11/11 · setup 10/10 · mapping 
 ## How to repeat (scripts used live)
 - Monitor watcher (server): samples each monitor every ~150 ms for the test colours, logs changes with times.
 - Laptop actions over SSH run in the signed-in session through a one-shot scheduled task (`/IT`), writing results
-  to `C:\Users\Public\*.txt` (helpers `dvqa.ps1`, `laptop-run.ps1`, `laptop-observe.ps1`, `laptop-drive-view.ps1` on the
+  to `C:\Users\Public\*.txt` (helpers `laptop-dvqa.ps1`, `laptop-run.ps1`, `laptop-observe.ps1`, `laptop-drive-view.ps1` on the
   laptop; see their headers). Start DeskView with `DESKVIEW_QA_INPUT=1` so injected input counts as real.
 - Latency: a test window flips colour on a key press / timer; time until the picture shows it, sampling one pixel
   (GetPixel) - one clock, no sync needed.

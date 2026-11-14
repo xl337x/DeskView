@@ -27,15 +27,15 @@ Check 'video key ignores case and spaces in the code' ($s.VideoKey() -eq $script
 
 # ---------------------------------------------------------------------------------------------- settings JSON round trip
 $s2 = [Activator]::CreateInstance($Settings)
-$s2.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Server'); $s2.RemoteName = 'laptop'; $s2.Screens['DISPLAY1'] = 1; $s2.Screens['DISPLAY2'] = 2
+$s2.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Server'); $s2.RemoteName = 'LAPTOP'; $s2.Screens['DISPLAY1'] = 1; $s2.Screens['DISPLAY2'] = 2
 $s2.SwitchDelayEnabled = $true; $s2.SwitchDelayMs = 333; $s2.RemoteSide = [Enum]::Parse((& $T 'DeskView.Side'), 'Bottom')
 $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 $back = $ser.Deserialize($ser.Serialize($s2), $Settings)
-Check 'settings survive a save/load round trip' ($back.RemoteName -eq 'laptop' -and $back.Screens['DISPLAY2'] -eq 2 -and $back.SwitchDelayMs -eq 333 -and "$($back.RemoteSide)" -eq 'Bottom' -and "$($back.Role)" -eq 'Server')
+Check 'settings survive a save/load round trip' ($back.RemoteName -eq 'LAPTOP' -and $back.Screens['DISPLAY2'] -eq 2 -and $back.SwitchDelayMs -eq 333 -and "$($back.RemoteSide)" -eq 'Bottom' -and "$($back.Role)" -eq 'Server')
 
 # ---------------------------------------------------------------------------------------------- engine choice kept on update
 $tmpHome = Join-Path $env:TEMP "dv-app-old-$PID"; New-Item -ItemType Directory -Force $tmpHome | Out-Null
-Set-Content (Join-Path $tmpHome 'app.json') '{"Role":1,"PairCode":"K7MPQ3XR","RemoteName":"laptop"}' -Encoding UTF8
+Set-Content (Join-Path $tmpHome 'app.json') '{"Role":1,"PairCode":"K7MPQ3XR","RemoteName":"LAPTOP"}' -Encoding UTF8
 [Environment]::SetEnvironmentVariable('DESKVIEW_HOME', $tmpHome)
 $loaded = $Settings::Load()
 Check 'settings from before the engine choice keep the classic engine (an update never switches it)' ($loaded.InputEngine -eq 'Classic') $loaded.InputEngine
@@ -63,7 +63,7 @@ try {
     Check 'writing identical settings reports "unchanged" (no needless engine restart)' (-not $changed)
     $s2.ComputerName = 'DE"SK ;x'; [void]$Core::WriteConfig($s2, $null)
     Check 'unsafe characters stripped from computer names' ([IO.File]::ReadAllText($cfgPath) -match '(?m)^computerName=DESKx\s*$')
-    $client = [Activator]::CreateInstance($Settings); $client.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Client'); $client.ServerAddress = '10.0.0.10'; $client.ComputerName = 'lap'
+    $client = [Activator]::CreateInstance($Settings); $client.Role = [Enum]::Parse((& $T 'DeskView.Role'), 'Client'); $client.ServerAddress = $env:DV_SERVER_IP; $client.ComputerName = 'lap'
     [void]$Core::WriteConfig($client, $null); $ini = [IO.File]::ReadAllText($cfgPath)
     Check 'client settings: client mode, server address, no portal, engine keeps admin rights' ($ini -match '(?m)^coreMode=1' -and $ini -match '(?m)^remoteHost=10\.0\.0\.10' -and $ini -notmatch 'portal=' -and $ini -notmatch 'elevate=false')
 } finally { foreach ($p in $cfgPath, $layoutPath) { if ($saved.ContainsKey($p)) { [IO.File]::WriteAllText($p, $saved[$p]) } } }

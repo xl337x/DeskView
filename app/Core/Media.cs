@@ -277,7 +277,7 @@ namespace DeskView
             string enc = pl.Legacy ? "" : "&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             string url = "srt://" + Tools.Host(peer) + ":" + port + "?mode=caller&latency=" + (LatencyMs[prof] * 1000) + "&transtype=live&connect_timeout=3000" + enc;
             // Frames 1 ms apart: the player is always "behind", shows the newest frame and drops older ones, so any lag
-            // (start-up, a network or CPU hiccup) drains by itself. Measured on SERVER (loopback, key-to-picture):
+            // (start-up, a network or CPU hiccup) drains by itself. Measured on the server (loopback, key-to-picture):
             // ~400 ms before, 150-190 ms with this; after a 1.5 s stall back to normal within ~2 s.
             string vf = "-vf setpts=N*0.001/TB" + (S.Picture == "Stretch" ? ",scale=" + r.Width + ":" + r.Height : "") + " ";
             // a stream that stops sending (the other computer asleep, network gone) ends the player after 4 s instead of

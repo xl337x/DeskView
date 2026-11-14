@@ -127,8 +127,8 @@ function TestCombo($card, $idx, $pick, $prop, $expectProp, $iniKey, $expectIni, 
 $SettingsType = T 'DeskView.AppSettings'
 foreach ($script:role in 'Server', 'Client') {
     $st = [Activator]::CreateInstance($SettingsType)
-    $st.Role = [Enum]::Parse((T 'DeskView.Role'), $script:role); $st.ComputerName = 'QA-DESK'; $st.RemoteName = 'laptop'; $st.PairCode = 'K7MPQ3XR'
-    $st.SetupDone = $true; $st.InputEngine = 'Classic'; $st.ServerAddress = '10.0.0.10'; $st.VideoPort = 9100; $st.ControlPort = 9102; $st.Save()
+    $st.Role = [Enum]::Parse((T 'DeskView.Role'), $script:role); $st.ComputerName = 'QA-DESK'; $st.RemoteName = 'LAPTOP'; $st.PairCode = 'K7MPQ3XR'
+    $st.SetupDone = $true; $st.InputEngine = 'Classic'; $st.ServerAddress = $env:DV_SERVER_IP; $st.VideoPort = 9100; $st.ControlPort = 9102; $st.Save()
     $engine = [Activator]::CreateInstance((T 'DeskView.Engine'), @($st))
     $script:form = [Activator]::CreateInstance((T 'DeskView.UI.MainForm'), @($engine)); $script:form.Size = New-Object Drawing.Size 1000, 760
     $script:form.Show(); Pump 400
@@ -156,10 +156,10 @@ foreach ($script:role in 'Server', 'Client') {
         $mon = $hit.Invoke($sm, @($pt))
         $b = Shot 'Screens map before'
         $sm.GetType().GetMethod('OnMouseClick', $bf).Invoke($sm, (Click-Args $pt)); Pump 300
-        $item = @($sm.LastMenu.Items | ? { $_.Text -like "Show laptop's screen 1*" })[0]
+        $item = @($sm.LastMenu.Items | ? { $_.Text -like "Show LAPTOP's screen 1*" })[0]
         $item.PerformClick(); Pump 300; $sm.LastMenu.Close(); $a = Shot 'Screens map after'
         $scr = (J)['Screens']; $assigned = ($scr.Keys | % { "$_=$($scr[$_])" }) -join ','
-        Proof 'Screens' "monitor map (click a monitor > 'Show laptop's screen 1')" "click $mon" "app.json Screens has $mon=1" "Screens: $assigned" ($scr[$mon] -eq 1) $b $a
+        Proof 'Screens' "monitor map (click a monitor > 'Show LAPTOP's screen 1')" "click $mon" "app.json Screens has $mon=1" "Screens: $assigned" ($scr[$mon] -eq 1) $b $a
         $sm.GetType().GetMethod('OnMouseClick', $bf).Invoke($sm, (Click-Args $pt)); Pump 300
         @($sm.LastMenu.Items | ? { $_.Text -eq 'Its own desktop' })[0].PerformClick(); Pump 300; $sm.LastMenu.Close()
         $scr = (J)['Screens']
@@ -191,7 +191,7 @@ foreach ($script:role in 'Server', 'Client') {
     $tb[0].Text = 'QA-DESK2'; $tb[1].Text = 'lap2'; $tb[2].Text = '10.0.0.5'; (Find 'Names and address' ([Windows.Forms.NumericUpDown])).Value = 24811
     SaveOn 'Connection'; $a = Shot 'Connection names after'; $j = J; $ini = Ini
     Proof 'Connection' 'text box: this computer''s name' "'QA-DESK' -> 'QA-DESK2'" 'app.json + engine computerName=QA-DESK2' "app.json $($j['ComputerName']); engine $(IniVal 'computerName')" ($j['ComputerName'] -eq 'QA-DESK2' -and (IniVal 'computerName') -eq 'QA-DESK2') $b $a
-    Proof 'Connection' 'text box: other computer''s name' "'laptop' -> 'lap2'" $(if ($script:role -eq 'Server') { 'app.json RemoteName=lap2; engine has [computer_lap2]' } else { 'app.json RemoteName=lap2' }) "app.json $($j['RemoteName']); engine section: $([bool]($ini -match '\[computer_lap2\]'))" ($j['RemoteName'] -eq 'lap2' -and ($script:role -eq 'Client' -or $ini -match '\[computer_lap2\]')) $b $a
+    Proof 'Connection' 'text box: other computer''s name' "'LAPTOP' -> 'lap2'" $(if ($script:role -eq 'Server') { 'app.json RemoteName=lap2; engine has [computer_lap2]' } else { 'app.json RemoteName=lap2' }) "app.json $($j['RemoteName']); engine section: $([bool]($ini -match '\[computer_lap2\]'))" ($j['RemoteName'] -eq 'lap2' -and ($script:role -eq 'Client' -or $ini -match '\[computer_lap2\]')) $b $a
     Proof 'Connection' 'text box: server address' "-> '10.0.0.5'" 'app.json ServerAddress + engine remoteHost=10.0.0.5' "app.json $($j['ServerAddress']); engine $(IniVal 'remoteHost')" ($j['ServerAddress'] -eq '10.0.0.5' -and (IniVal 'remoteHost') -eq '10.0.0.5') $b $a
     Proof 'Connection' 'number: port' '24800 -> 24811' 'app.json Port + engine port=24811' "app.json $($j['Port']); engine $(IniVal 'port')" ("$($j['Port'])" -eq '24811' -and (IniVal 'port') -eq '24811') $b $a
     if ($script:role -eq 'Server') {

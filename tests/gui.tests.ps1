@@ -103,7 +103,7 @@ Check 'assistant: Finish starts the engine (dry run: "start" sent)' ([DeskView.C
 Check 'assistant: engine settings written' (Test-Path (Join-Path $home2 'engine.conf'))
 
 # ------------------------------------------------------------------------------------------------- tray app + window
-$s = $SettingsType::Load(); $s.RemoteName = 'laptop'; $s.Save()
+$s = $SettingsType::Load(); $s.RemoteName = 'LAPTOP'; $s.Save()
 $engine = [Activator]::CreateInstance($EngineType, @($s))
 $tray = [Activator]::CreateInstance((T 'DeskView.TrayApp'), @($engine, $true)); Pump 800
 $form = (T 'DeskView.TrayApp').GetField('window', $bf).GetValue($tray)
@@ -164,7 +164,7 @@ Check 'Connection: New code asks first, then makes a new valid code' ($code.Text
 $side = All-Controls $form | ? { $_ -is [Windows.Forms.ComboBox] -and $_.Items -contains 'Bottom' } | Select -First 1
 $side.SelectedItem = 'Bottom'
 (All-Controls $form | ? { $_ -is [Windows.Forms.Button] -and $_.Text -eq 'Save and apply' } | Select -First 1).PerformClick(); Pump 600
-Check 'Connection: Save stores the new code and the layout (other computer below)' ((Settings).PairCode -eq $code.Text -and ([IO.File]::ReadAllText((Join-Path $home2 'layout.conf')) -match 'down = laptop'))
+Check 'Connection: Save stores the new code and the layout (other computer below)' ((Settings).PairCode -eq $code.Text -and ([IO.File]::ReadAllText((Join-Path $home2 'layout.conf')) -match 'down = the laptop'))
 
 $form.ShowPage('Screens'); Pump 300
 $engine.SetScreen(($engine.S.Screens.Keys | Select -First 1), 0); Pump 300

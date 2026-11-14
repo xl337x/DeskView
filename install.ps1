@@ -1,9 +1,13 @@
-﻿<#
-  DeskView installer - downloads DeskView from GitHub (one zip) and runs its setup.
+<#
+  DeskView installer - downloads DeskView from GitHub (one zip) and runs its setup. Paste into PowerShell:
 
-  Download it to a file and run it (antivirus products rightly distrust scripts piped straight into iex):
-    iwr https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 -OutFile $env:TEMP\deskview-install.ps1
-    powershell -ExecutionPolicy Bypass -File $env:TEMP\deskview-install.ps1 [-PairCode CODE] [-Role Server|Client] [-ServerAddress IP] [-VirtualScreens N] [-Uninstall]
+    irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 | iex
+
+  With options (any of -Role Server|Client, -PairCode CODE, -ServerAddress IP, -VirtualScreens N, -Uninstall, -Ref):
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1))) -Role Client -PairCode CODE
+
+  PCs whose security software blocks piped scripts: save it and run the file instead
+    iwr https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 -OutFile $env:TEMP\dv.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\dv.ps1
 
   -Ref picks a branch or tag (default: main). Developers can run app\DeskView-Setup.ps1 from a checkout instead.
 #>
@@ -24,7 +28,7 @@ $ProgressPreference = 'SilentlyContinue'    # Windows PowerShell's progress bar 
 
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
     Write-Host 'This PC only allows restricted PowerShell (constrained language mode), so DeskView cannot run here.' -ForegroundColor Yellow
-    Write-Host 'Ask IT to allow DeskView (or to sign it).'; exit 1
+    Write-Host 'Ask IT to allow DeskView (or to sign it).'; return
 }
 
 # One download: the whole source tree of one branch or tag, so every file comes from the same version.
@@ -52,4 +56,5 @@ if ($Uninstall) { $a += '-Uninstall' }
 & powershell @a
 $code = $LASTEXITCODE
 try { [IO.Directory]::Delete($work, $true) } catch { }
-exit $code
+# run as a file: report the result as the exit code; pasted (irm | iex): never close the user's PowerShell window
+if ($MyInvocation.MyCommand.Path) { exit $code } elseif ($code -ne 0) { Write-Host "DeskView setup did not finish (code $code) - see above." -ForegroundColor Yellow }
