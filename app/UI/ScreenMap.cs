@@ -42,7 +42,7 @@ namespace DeskView.UI
             menu.Items.Add(own);
             menu.Items.Add(new ToolStripSeparator());
             var name = string.IsNullOrEmpty(engine.S.RemoteName) ? "the other computer" : engine.S.RemoteName;
-            for (int k = 1; k <= 4; k++)
+            for (int k = 1; k <= engine.RemoteScreenCount; k++)
             {
                 int kk = k;
                 var it = new ToolStripMenuItem(string.Format("Show {0}'s screen {1}", name, k) + (k == 1 ? "  (its own display - a mirror of what it shows)" : "  (extra screen - drag its windows here)")) { Checked = cur == k };

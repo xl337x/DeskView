@@ -68,6 +68,11 @@ try {
     Send 'CB'; Send 'CD !!notbase64!!'; Send 'CE'; Send 'P'; Start-Sleep -Milliseconds 200
     Check 'a broken clipboard message does not break the link' ($agent.Client -ne '')
 
+    # smart screens: the laptop says how many screens it has and which hold windows
+    Send 'Q 4'; Send 'O 2,4'; Start-Sleep -Milliseconds 200
+    Check 'smart screens: screen count and screens with windows arrive' ($agent.ScreenCount -eq 4 -and $agent.OccupiedScreens -eq '2,4') "count=$($agent.ScreenCount) occupied=$($agent.OccupiedScreens)"
+    Send 'O -'; Send 'Q 99'; Send 'O 2;rm'; Start-Sleep -Milliseconds 200
+    Check 'smart screens: "none" is understood, nonsense is refused' ($agent.OccupiedScreens -eq '' -and $agent.ScreenCount -eq 4) "count=$($agent.ScreenCount) occupied='$($agent.OccupiedScreens)'"
     Send '<L 5'; Start-Sleep -Milliseconds 300
     $closed = $false; try { Send 'P'; Send 'P'; Start-Sleep -Milliseconds 200; Send 'P' } catch { $closed = $true }
     Check 'a frame claiming to come from the agent is refused (reflection)' ($closed -or $agent.Client -eq '')
