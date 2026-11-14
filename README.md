@@ -2,143 +2,131 @@
 
 **One keyboard and mouse for several computers - and every computer's screens on any monitor, in both directions.**
 
-- Use one keyboard and mouse across your computers: move the mouse off the edge of one screen and it continues on
-  the other computer, with a shared clipboard.
-- Put your laptop's screens on any monitors of your desktop, then just move the mouse onto them - keyboard and mouse
-  hand over to the laptop at the exact spot you pointed, and the cursor moves across all of the laptop's screens like
-  a normal multi-monitor desktop. Drag the laptop's windows between them.
+- Move the mouse off the edge of one screen and it continues on the other computer, with the keyboard and the
+  clipboard. Built in - nothing else to install.
+- Put your laptop's screens on any monitors of your desktop, then just move the mouse onto them: the mouse lands on
+  the laptop at the exact spot you pointed. Drag the laptop's windows between its screens across your monitors.
 - From the laptop, pull up any of the desktop's monitors full screen and control it with the laptop's own keyboard
   and touchpad.
-- Encrypted end to end, paired with a code. One install command, the same on both computers. Lives in the tray.
+- Drag files onto the other computer's picture to send them.
+- Everything encrypted and paired with a code. One install command, the same on both computers.
 
 ## Install
 
-On **each** Windows computer, in PowerShell (it downloads the installer to a file and runs it):
+On **each** Windows 10/11 computer, in PowerShell:
 
 ```powershell
 iwr https://raw.githubusercontent.com/xl337x/DeskView/main/install.ps1 -OutFile $env:TEMP\deskview-install.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\deskview-install.ps1
 ```
 
-- One administrator prompt (only if something is missing): the keyboard/mouse engine, and two firewall rules limited
-  to your local network (UDP 9000-9009 video, TCP 9002 control). FFmpeg is downloaded next to DeskView if needed.
-- Setup asks which computer is the **server** (the one whose keyboard and mouse you use) if it can't tell.
-- The server prints a **pairing code** (also in the tray menu); the client asks for it. To pass it directly, add
-  `-PairCode ABCD2345` at the end of the command. Other options: `-Role Server|Client`, `-VirtualScreens 2`, `-Uninstall`.
+- It downloads DeskView (one zip, every file from the same version) and FFmpeg (one pinned build, checked by its
+  SHA256), and asks once for administrator approval to add firewall rules limited to your local network
+  (UDP 9000-9009 video, TCP 9002 control, UDP 9010 finding the other computer).
+- It asks which computer is the **server** (the one whose keyboard and mouse you use). The server shows a
+  **pairing code**; enter it on the other computer. The other computer finds the server on the network by itself.
+- Options: `-Role Server|Client`, `-PairCode CODE`, `-ServerAddress IP` (if the computers can't find each other,
+  e.g. on guest Wi-Fi), `-VirtualScreens N` (extra screens for a laptop, see below), `-ClassicEngine`, `-Uninstall`.
+
+DeskView runs **from source**: Windows PowerShell compiles its C# code in memory each time it starts (about a
+second), with the compiler that is part of Windows. There is no .exe to download, block or sign, and nothing to
+build. PCs that only allow restricted PowerShell (constrained language mode) are told so plainly.
 
 ## Every monitor can show any screen of the other computer
 
-Each computer streams **all** of its screens (screen 1 = its left-most monitor). On the server, the tray menu
-**Monitors** lets every local monitor show any screen of the client - or its own desktop.
+Each computer streams **all** of its screens. In the app's **Screens** page (or the tray menu), click any monitor
+to choose which of the other computer's screens it shows - or its own desktop.
 
-Give a laptop more screens than it physically has (they appear on your monitors) - add `-VirtualScreens 2` to the
-install command on the laptop. This installs the open-source
-[Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver); arrange the new screens in
-Windows *Settings > System > Display*, e.g. to the right of the laptop screen.
+A window can only be dragged onto a screen of its own computer. To spread a laptop's windows over several of your
+monitors, give the laptop more screens than it physically has: add `-VirtualScreens 2` to the install command on
+the laptop (installs the open-source [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver);
+needs administrator rights, often blocked on company-managed PCs). Show each of its screens on one of your monitors
+and drag its windows across them like a normal multi-monitor desktop.
 
 ## Use
 
 | Where you sit | Keys | What happens |
 |---|---|---|
-| Server | **Ctrl+Alt+1..9** | The client's main screen appears on your monitor 1..9 (counted left to right). Move the mouse onto it to work there. |
-| Server | **Ctrl+Alt+0** | Hide all of them |
-| Client | **Ctrl+Alt+1..9** | The server's monitor 1..9 fills this screen; this computer's keyboard and touchpad control it |
-| Client | **Ctrl+Alt+0** | Back to this computer |
-| Either | **Ctrl+Alt+D** | Cycle through the monitors |
+| Either | push the mouse off the edge facing the other computer | keyboard, mouse and clipboard continue there; push back to return |
+| Server | **Ctrl+Alt+1..9** | the client's main screen appears on your monitor 1..9 (left to right); move the mouse onto it to work there |
+| Client | **Ctrl+Alt+1..9** | the server's monitor 1..9 fills this screen; this computer's keyboard and touchpad control it |
+| Either | **Ctrl+Alt+0** | everything back: pictures hidden, pointer home |
+| Either | **Ctrl+Alt+D** | cycle through the monitors |
 
-Hotkeys only react to keys you physically press on that computer - keys forwarded from the other computer never
-trigger them.
+The DeskView window (double-click the tray icon) has a guided setup assistant and pages for everything: live
+status and health checks, **What you can do** (step-by-step), the screen map, connection and pairing, switching and
+clipboard options, security and logs.
 
-The tray icon menu has the same choices plus **Picture** (*Fit* keeps the other screen's shape, *Stretch* fills
-the monitor), **Quality** (*Auto*, *Wired* 20 Mbps, *Wi-Fi* 10 Mbps) and **Interactive** (mouse hand-over on/off).
+## Keyboard & mouse: built in
 
-Command line: `DeskView.ps1 -Show 2` (or `DISPLAY2`, or `Off`) controls the running copy; on the server
-`-Show 2=1` puts the client's screen 1 on monitor 2 (`2=0` gives monitor 2 its own desktop back).
+DeskView's own engine is the default:
 
-## Built-in keyboard & mouse engine (new)
+- edge switching in about 40 ms round trip on a LAN; the clipboard (text) follows the pointer both ways
+- encrypted and authenticated with the pairing code; a dropped link or Ctrl+Alt+0 always brings the pointer home
+- no switching while you drag something; a laptop without a mouse keeps its pointer visible
+- not yet: windows running as administrator, UAC prompts and the sign-in screen on the *other* computer, and
+  copying images/files through the clipboard (drag files onto the picture instead)
 
-DeskView can switch the keyboard and mouse between the computers by itself - no separate engine running:
-
-- push the pointer off the edge that faces the other computer and it continues there, with the keyboard; it comes back the same way (about 40 ms round trip on a LAN)
-- the clipboard (text, up to the size set on *Switching & input*) follows the pointer, both ways
-- everything is encrypted and authenticated with the pairing code; Ctrl+Alt+0 always brings the pointer home, and so does a dropped link
-- the laptop keeps its pointer visible (Windows hides it when no mouse is plugged in)
-
-Turn it on with **Switching & input > Keyboard & mouse engine > DeskView built-in** in the app, or **Keyboard & mouse: DeskView built-in** in the tray menu - on both computers. The classic engine stays the default until the built-in one has more field testing; turning DeskView off hands switching back to the classic engine.
-
-Not yet in the built-in engine: windows that run as administrator and the Windows sign-in / UAC screens on the other computer (they need an elevated helper), and copying images or files through the clipboard (use drag and drop for files).
-
-## The DeskView app (preview)
-
-`gui/` holds **DeskView.exe**, a native Windows app with a guided setup assistant and pages for everything:
-live status and health checks, a visual screen map (click a monitor to choose what it shows), connection and
-pairing, every switching / input / clipboard option, security and logs. Build it with
-`powershell -ExecutionPolicy Bypass -File gui\build.ps1` (needs Visual Studio 2022 Build Tools; runs on the
-.NET Framework 4.8 that comes with Windows). It is not signed yet, so managed computers with strict Defender
-"attack surface reduction" rules may block it; the PowerShell DeskView (installed by the command above) keeps
-working either way and steps aside while the app runs.
+The classic engine (installed with `-ClassicEngine`) is still supported; choose it on **Switching & input**, on
+both computers. Updating DeskView never switches a computer's engine by itself.
 
 ## How it works
 
-| Piece | File | What it does |
+| Piece | Files | What it does |
 |---|---|---|
-| Tray app | `app/DeskView.ps1` | Detects its role, streams its own screens, shows the other computer's, manages everything below. |
-| Keyboard/mouse engine | (installed separately) | Shares one keyboard and mouse; DeskView's build adds **portals** - the rectangles where another computer's screens are shown behave like that computer's screens. |
-| Video | FFmpeg / ffplay | Desktop Duplication capture -> hardware H.264 (NVENC / Quick Sync / AMF / Media Foundation, else x264), frames kept on the GPU -> encrypted SRT over UDP. The viewer decodes on the GPU and shows it borderless, 1:1 pixels on scaled monitors. |
-| Control channel | `app/DeskView-Input.cs` | The reverse direction: the *forwarder* captures your physical input while you view the other computer and sends it; the *agent* there replays it. Your local cursor keeps moving over the picture, so pointing feels instant. |
-| Portal fallback | `app/DeskView-Portal.cs` | For an engine without portals: a low-level mouse hook that hands over at the matching edge. |
-| Monitor mapping | `app/DeskView-Dxgi.cs` | Maps Windows monitor names (`DISPLAY2`) to the capture index. |
-| Setup | `app/DeskView-Setup.ps1`, `install.ps1` | Install / update / uninstall. |
+| Launcher | `app/DeskView.ps1` | Checks PowerShell allows it, compiles `app/**/*.cs` in memory, starts the app (`-Tray`, `-Show 2`, `-LoadOnly` for tests). |
+| App | `app/Core`, `app/UI` | Settings, the engine loop (video, portals, switching, files), tray and window. C# 5, so every Windows can compile it. |
+| Keyboard/mouse, files, discovery | `app/DeskView-Input.cs` | Forwarder (captures your input) and agent (replays it) over an encrypted channel; edge switching, clipboard, file transfer; LAN discovery sealed with the pairing code. |
+| Video | FFmpeg / ffplay | Desktop Duplication capture -> hardware H.264 (NVENC / Quick Sync / AMF / Media Foundation) -> SRT encrypted with AES-256. Decoding on the GPU, 1:1 pixels on scaled monitors. |
+| Monitor mapping, portals | `app/DeskView-Dxgi.cs`, `app/DeskView-Portal.cs` | Monitor names to capture outputs; physical-pixel helpers; pointer visibility. |
+| Setup | `install.ps1`, `app/DeskView-Setup.ps1` | Install / update / uninstall. |
 
-Resolutions and scaling are detected automatically: each stream says which screen it is and where it sits, the
-other computer's resolution comes from the stream itself, monitors being plugged in or changed are picked up within
-seconds, and everything works in physical pixels (mixed 100% / 150% scaling is handled).
+Resolutions and scaling are detected automatically: each stream says which screen it is and where it sits, monitors
+being plugged in or changed are picked up within seconds, and everything works in physical pixels.
 
 ## Security
 
-- **Keyboard and mouse** traffic is encrypted with TLS; each side remembers the other's certificate fingerprint.
-- **Video** is encrypted (SRT, AES-256) with a key derived from the pairing code; without it nobody on the network
-  can watch your screen.
-- **Remote control** uses mutual authentication - the pairing code is never sent: both sides prove they know it
-  (PBKDF2-SHA256 + HMAC challenges over fresh nonces) - then every message is AES-256 encrypted and HMAC-authenticated
-  with a sequence number (no replay or tampering). Only the paired computer's address is accepted, unauthenticated
-  peers get 5 s, and 5 wrong attempts lock an address out for a minute.
-- The 12-character pairing code comes from a cryptographic random generator.
+- **Keyboard, mouse, clipboard, files**: the pairing code is never sent - both computers prove they know it
+  (PBKDF2-SHA256 + HMAC over fresh nonces), then every message is AES-256 encrypted and HMAC-authenticated with a
+  sequence number (no replay, no tampering, reflected frames refused). 5 wrong attempts lock an address out for a
+  minute.
+- **Video** is encrypted (SRT, AES-256) with a key derived from the pairing code.
+- **Finding each other**: the client's probe and the server's answer are both sealed with the pairing code; a
+  computer without the code gets no answer, and a fake server is ignored.
+- Firewall rules allow the local network only. The 12-character pairing code comes from a cryptographic generator.
 
-## Performance
+## Develop
 
-Measured on an i7-1255U laptop (Intel Iris Xe):
-
-| | |
-|---|---|
-| Mouse hand-over into / out of a portal | under a millisecond |
-| Picture delay (loopback, wired) | ~150-250 ms |
-| Sender CPU | frames stay on the GPU: ~3x less CPU than copying them back |
-| Viewer CPU | GPU decoding (D3D11): ~3.5x less CPU than software decoding |
-
-The viewer reconnects automatically if the stream stalls or drops.
-
-## Tests
+Edit the `.cs` files and start `app\DeskView.ps1` - that's the whole build. Tests:
 
 ```powershell
-tests\run-all.ps1          # height mapping + control channel (loopback) - any Windows computer
-tests\run-all.ps1 -Live    # + live portal tests on every monitor (on the server, client connected)
+tests\run-all.ps1
 ```
 
-The live tests move your mouse by themselves for a minute or two.
+| Test | What it proves |
+|---|---|
+| `csharp5.tests.ps1` | every `.cs` compiles with the compiler that ships with Windows (no newer C# syntax slips in) |
+| `app.tests.ps1` | settings, pairing codes, engine settings and layout, monitor and picture logic |
+| `gui.tests.ps1` | every page opens; setup assistant; tray menu |
+| `gui-deep.tests.ps1` | every button, checkbox, list, number and text field on every page, as server and client, with its effect proven (app.json, engine settings, engine commands, clipboard, windows opened) - HTML report and before/after screenshots in `%TEMP%\deskview-deep-qa` |
+| `link.tests.ps1` | built-in switching, clipboard, names, discovery (right code, wrong code, fake server) |
+| `input.tests.ps1` | control channel security and input replay (moves your real mouse/keyboard for a few seconds) |
+| `files.tests.ps1`, `mapping.tests.ps1` | file transfer (incl. hostile names) and resolution mapping |
+| `setup.tests.ps1` | install into throwaway folders, hand-off, update, uninstall |
+
+Releasing is pushing to `main` (or a tag; `install.ps1 -Ref <tag>` installs a tag).
 
 ## Uninstall
 
-Run the install command with `-Uninstall` at the end. It removes DeskView, its startup entry, settings and firewall
-rules; the keyboard/mouse engine and FFmpeg stay.
+Run the install command with `-Uninstall` at the end: removes DeskView, its startup entry, settings and firewall rules.
 
 ## Requirements and limits
 
-- Windows 10 1607+ / Windows 11 on both computers, on the same local network.
-- Wired is smoothest; Wi-Fi works with a little more delay.
-- What you see of the other computer is video: about 150-250 ms behind (mouse and keyboard switch in under a millisecond).
+- Windows 10 1607+ / Windows 11 on both computers, on the same local network. Wired is smoothest.
+- What you see of the other computer is video: about 150-250 ms behind; the mouse and keyboard themselves switch in
+  milliseconds.
 - Windows' secure screens (lock screen, UAC prompts) can't be captured and show black while they're up.
 - Two computers today (one server + one client). One screen is shown on one monitor at a time.
 
 ## License
 
-DeskView is MIT licensed (see `LICENSE`). Third-party components and their licenses: `THIRD_PARTY_NOTICES.md`.
+DeskView is MIT licensed (see `LICENSE`). Third-party components: `THIRD_PARTY_NOTICES.md`.
