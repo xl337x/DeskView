@@ -1,4 +1,4 @@
-﻿# Deep GUI test: every button, checkbox, list, number and text field on every page is used like a user would, and its
+# Deep GUI test: every button, checkbox, list, number and text field on every page is used like a user would, and its
 # EFFECT is proven - the value saved in app.json, the line written to the engine settings, the command sent to the engine,
 # the clipboard content, the window that opened. Before/after screenshots of every step and an HTML report with all the
 # proof go to $env:TEMP\deskview-deep-qa. Runs on a throwaway settings folder with the engine in dry-run mode (commands
@@ -165,6 +165,8 @@ foreach ($script:role in 'Server', 'Client') {
         $scr = (J)['Screens']
         Proof 'Screens' "monitor map (click a monitor > 'Its own desktop')" "click $mon" "app.json Screens no longer has $mon" "Screens: $(($scr.Keys | % { "$_=$($scr[$_])" }) -join ',')" (-not $scr.ContainsKey($mon)) $a (Shot 'Screens map own')
         TestCheck 'Picture' 'Interactive: moving the mouse onto a picture works on that computer' 0 'Interactive' $null 'Picture'
+        TestCheck 'Picture' "Smart screens: a monitor shows the other computer's extra screen by itself when you drag a window onto it (screen 2 -> monitor 1, 3 -> 2, ...)" 0 'SmartScreens' $null $null
+        TestCheck 'Picture' 'Guide: a bar on monitors showing the other computer (with ways back), and a short message when the mouse moves over' 0 'ShowGuide' $null $null
     } else {
         foreach ($k in 1..4) {
             Open 'Screens'; $b = Shot "Screens view $k before"

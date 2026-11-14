@@ -2,6 +2,7 @@
 // in line with the settings, four times a second, on the UI thread (like a game loop, but cheap).
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -134,6 +135,7 @@ namespace DeskView
             timer.Stop();
             try { if (S.Role == Role.Server) CoreControl.WriteConfig(S, null); } catch { }   // no portal left behind
             foreach (var z in zones.Values) z.Close();
+            foreach (var st in strips.Values) st.Close();
             forwarder.TakeBack();
             discovery.Stop();
             forwarder.Stop(); agent.Stop(); Media.StopPlayers(); Media.StopSenders();
@@ -226,6 +228,7 @@ namespace DeskView
         {
             Media.SyncPlayers(WantedPlayers(), Peer());
             UpdateDropZones();
+            UpdateStrips();
             if (S.Role == Role.Server) UpdatePortals();
             else
             {
@@ -311,6 +314,122 @@ namespace DeskView
 
         // ------------------------------------------------------------------------------------------------- portals
         /// <summary>"x,y,w,h,SIDES[@client screen]" for every picture, separated by ';' (for the engine).</summary>
+        static Rectangle? ParseRect(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return null;
+            var p = s.Split(','); int x, y, w, h;
+            if (p.Length == 4 && int.TryParse(p[0], out x) && int.TryParse(p[1], out y) && int.TryParse(p[2], out w) && int.TryParse(p[3], out h) && w > 0 && h > 0) return new Rectangle(x, y, w, h);
+            return null;
+        }
+
+        // ------------------------------------------------------------------------------------------------- smart screens
+        string lastOccupied = null; DateTime lastOccupiedSent = DateTime.MinValue, lastOccupiedCheck = DateTime.MinValue;
+        readonly Dictionary<string, int> autoShown = new Dictionary<string, int>();        // monitor -> screen shown by smart screens
+        readonly Dictionary<string, DateTime> emptySince = new Dictionary<string, DateTime>();
+
+        /// <summary>Client: tell the server which extra screens (2, 3, ...) hold windows, when that changes.</summary>
+        void ReportOccupied()
+        {
+            if (S.Role != Role.Client || !forwarder.Connected || (DateTime.Now - lastOccupiedCheck).TotalMilliseconds < 500) return;
+            lastOccupiedCheck = DateTime.Now;
+            var screens = Tools.SharedScreens();
+            var has = DeskViewDisplays.ScreensWithWindows(screens.Select(s => s.Bounds).ToArray());
+            var list = string.Join(",", Enumerable.Range(1, screens.Length - 1).Where(i => has[i]).Select(i => (i + 1).ToString()).ToArray());
+            if (list != lastOccupied || (DateTime.Now - lastOccupiedSent).TotalSeconds > 5)
+            {
+                lastOccupied = list; lastOccupiedSent = DateTime.Now;
+                forwarder.ReportOccupied(list);
+            }
+        }
+
+        /// <summary>Server: show the client's extra screen N on monitor N-1 while it holds windows; give it back 3 s after
+        /// it empties. Monitors the user set by hand are never touched.</summary>
+        void ServiceSmartScreens()
+        {
+            if (S.Role != Role.Server || !S.SmartScreens) return;
+            var occ = agent.OccupiedScreens;
+            if (occ == null) return;
+            var busy = new HashSet<int>(occ.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => { int n; return int.TryParse(x, out n) ? n : 0; }).Where(n => n >= 2));
+            var monitors = Tools.OrderedScreens().Select(Tools.Short).ToList();
+            foreach (var k in autoShown.Keys.ToList()) { int cur; if (!S.Screens.TryGetValue(k, out cur) || cur != autoShown[k]) autoShown.Remove(k); }   // the user changed it: theirs now
+            foreach (var n in busy)
+            {
+                if (S.Screens.ContainsValue(n) || n - 2 >= monitors.Count) continue;   // already on a monitor / no monitor for it
+                var mon = monitors[n - 2];
+                if (S.Screens.ContainsKey(mon)) continue;                              // that monitor shows something the user chose
+                SetScreen(mon, n); autoShown[mon] = n; emptySince.Remove(mon);
+                var who = string.IsNullOrEmpty(S.RemoteName) ? "The other computer's" : S.RemoteName + "'s";
+                OnNotice(string.Format("{0} screen {1} is now on monitor {2} (a window went there)", who, n, n - 1), false);
+            }
+            foreach (var kv in autoShown.ToList())
+            {
+                if (busy.Contains(kv.Value)) { emptySince.Remove(kv.Key); continue; }
+                DateTime t;
+                if (!emptySince.TryGetValue(kv.Key, out t)) { emptySince[kv.Key] = DateTime.Now; continue; }
+                if ((DateTime.Now - t).TotalSeconds < 3) continue;
+                emptySince.Remove(kv.Key); autoShown.Remove(kv.Key);
+                SetScreen(kv.Key, 0);   // empty for 3 s: the monitor is this computer's again
+            }
+        }
+
+        // ------------------------------------------------------------------------------------------------- the guide
+        readonly Dictionary<string, UI.MonitorStrip> strips = new Dictionary<string, UI.MonitorStrip>();
+        UI.Toast toast;
+        long engineLogPos = -1;
+        bool onOther; DateTime lastToast = DateTime.MinValue;
+
+        /// <summary>A strip on every monitor that shows the other computer: which screen, and ways back.</summary>
+        void UpdateStrips()
+        {
+            var want = S.ShowGuide && S.Role == Role.Server ? Media.Players.Values.ToList() : new List<Player>();
+            foreach (var k in strips.Keys.ToList()) if (!want.Any(p => p.Key == k)) { strips[k].Close(); strips.Remove(k); }
+            var name = string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName;
+            foreach (var pl in want)
+            {
+                UI.MonitorStrip st;
+                if (!strips.TryGetValue(pl.Key, out st)) strips[pl.Key] = st = new UI.MonitorStrip(this, pl.Key);
+                var caption = pl.Live
+                    ? string.Format("{0}  ·  screen {1}{2}     move the mouse below this bar to work on {0}", name, pl.RemoteN, pl.RemoteN == 1 ? " (its own display)" : "")
+                    : string.Format("{0}  ·  screen {1}  -  connecting...", name, pl.RemoteN);
+                st.Show(pl.Screen.Bounds, caption);
+            }
+        }
+
+        /// <summary>A short message whenever keyboard and mouse move to the other computer or come back.</summary>
+        void ServiceToast()
+        {
+            if (!S.ShowGuide || S.Role == Role.None) return;
+            bool now = onOther;
+            if (Builtin) now = forwarder.RemoteOwned;
+            else
+            {
+                try
+                {
+                    var f = CoreControl.ServiceLog;
+                    if (!File.Exists(f)) return;
+                    using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        if (engineLogPos < 0 || engineLogPos > fs.Length) engineLogPos = fs.Length;   // start from now
+                        if (fs.Length == engineLogPos) return;
+                        fs.Seek(engineLogPos, SeekOrigin.Begin);
+                        var text = new StreamReader(fs).ReadToEnd(); engineLogPos = fs.Length;
+                        foreach (Match m in Regex.Matches(text, "switch from \"([^\"]+)\" to \"([^\"]+)\""))
+                            now = m.Groups[2].Value != S.ComputerName;
+                    }
+                }
+                catch { return; }
+            }
+            if (now == onOther) return;
+            onOther = now;
+            if ((DateTime.Now - lastToast).TotalSeconds < 4) return;   // crossing back and forth quickly: don't nag
+            lastToast = DateTime.Now;
+            if (toast == null) toast = new UI.Toast();
+            var name = string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName;
+            var mon = Screen.FromPoint(Cursor.Position).Bounds;
+            toast.Say(mon, now ? string.Format("Keyboard and mouse are on {0}  -  move back, or press Ctrl+Alt+0", name)
+                               : string.Format("Back on {0}", S.ComputerName), now ? 2.5 : 1.5);
+        }
+
         string PortalValue()
         {
             if (!S.Interactive || !CoreControl.PortalCapable) return null;
@@ -321,10 +440,18 @@ namespace DeskView
             for (int i = 0; i < pls.Count; i++)
             {
                 var r = rects[i];
+                // where on the other computer this picture is (an older sender: its screen 1, the main screen, at 0,0)
+                Rectangle? src = ParseRect(pls[i].RemoteRect);
+                if (src == null && pls[i].RemoteRes.HasValue && pls[i].RemoteN == 1) src = new Rectangle(0, 0, pls[i].RemoteRes.Value.Width, pls[i].RemoteRes.Value.Height);
+                // the guide strip along the top of the monitor stays this computer's: the hand-over zone starts below it
+                int cut = S.ShowGuide ? Math.Max(0, pls[i].Screen.Bounds.Top + UI.MonitorStrip.StripHeight - r.Y) : 0;
+                if (cut > 0 && cut < r.Height)
+                {
+                    if (src.HasValue) { var s = src.Value; int sc = (int)Math.Round(cut * (double)s.Height / r.Height); src = new Rectangle(s.X, s.Y + sc, s.Width, s.Height - sc); }
+                    r = new Rectangle(r.X, r.Y + cut, r.Width, r.Height - cut);
+                }
                 var e = string.Format("{0},{1},{2},{3},{4}", r.X, r.Y, r.Width, r.Height, ExitSides(r, rects.Where((x, j) => j != i).ToList()));
-                if (pls[i].RemoteRect != null) e += "@" + pls[i].RemoteRect;
-                // an older sender doesn't say where its screen is: its screen 1 is the main screen, at 0,0
-                else if (pls[i].RemoteRes.HasValue && pls[i].RemoteN == 1) e += string.Format("@0,0,{0},{1}", pls[i].RemoteRes.Value.Width, pls[i].RemoteRes.Value.Height);
+                if (src.HasValue) e += string.Format("@{0},{1},{2},{3}", src.Value.X, src.Value.Y, src.Value.Width, src.Value.Height);
                 entries.Add(e);
             }
             return string.Join(";", entries);
@@ -435,6 +562,9 @@ namespace DeskView
                 if (File.Exists(cmdFile)) { var c = File.ReadAllText(cmdFile).Trim(); File.Delete(cmdFile); if (c.Length > 0) ShowOn(c); }
 
                 ServiceFiles();
+                ServiceToast();
+                ReportOccupied();
+                ServiceSmartScreens();
                 var req = agent.TakeRequestedMonitor();
                 if (req != null) SetAgentScreen(req);
                 Media.ServiceSenders();
@@ -451,6 +581,7 @@ namespace DeskView
                 if (Media.ServicePlayers(Peer()))
                 {
                     UpdateDropZones();
+                    UpdateStrips();
                     if (S.Role == Role.Server) UpdatePortals(); else UpdateForwarderPicture();
                     OnChanged();
                 }
@@ -468,6 +599,7 @@ namespace DeskView
                         OnNotice("Monitor layout changed - adjusted.", false);
                     }
                     ServiceDiscovery();
+                    if (strips.Count > 0) UpdateStrips();   // stay above the pictures
                     var before = S.Peer; Peer();
                     if (S.Role == Role.Client && S.Peer != before) forwarder.Peer = S.Peer;
                     if (Builtin && S.Role == Role.Server && !string.IsNullOrEmpty(S.Peer) && forwarder.Peer != S.Peer) forwarder.Peer = S.Peer;

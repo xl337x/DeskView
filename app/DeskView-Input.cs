@@ -306,6 +306,7 @@ public class DeskViewAgent
     public int Switches;                         // times the pointer came over / went back (tests)
     public string LastClipboardIn;               // last clipboard text received (tests)
     public volatile string PeerName = "";        // the other computer's name, as it told us over the link
+    public volatile string OccupiedScreens;      // the other computer's screens that hold windows ("2,4"; null = never told)
 
     string edgeIn;                               // side the pointer came in from while the other machine drives it (null = not)
     string lastClip;                             // last text synced either way: never echo it back
@@ -561,6 +562,7 @@ public class DeskViewAgent
                 case "R": MoveBy(int.Parse(p[1]), int.Parse(p[2])); break;
                 case "X": if (edgeIn != null) { edgeIn = null; ReleaseAll(); } break;   // the other machine took its pointer back
                 case "N": if (p.Length > 1) PeerName = System.Text.RegularExpressions.Regex.Replace(p[1], @"[^\w\-.]", ""); break;
+                case "O": OccupiedScreens = p.Length > 1 && System.Text.RegularExpressions.Regex.IsMatch(p[1], @"^[0-9,]{0,40}$") ? p[1] : ""; break;
                 case "CB": clipIn = new StringBuilder(); break;
                 case "CD":
                     if (clipIn != null && p.Length > 1) { clipIn.Append(p[1]); if (clipIn.Length > MaxClipboardBytes / 3 * 4 + 8) clipIn = null; }
@@ -932,6 +934,9 @@ public class DeskViewForwarder
 
     /// <summary>Take the pointer back without moving it (Ctrl+Alt+0, or switching turned off).</summary>
     public void TakeBack() { if (RemoteOwned) { Enqueue("X"); ComeBack(32768); } }
+
+    /// <summary>Tells the other computer which of this computer's screens hold windows (e.g. "2,4").</summary>
+    public void ReportOccupied(string screens) { Enqueue("O " + (string.IsNullOrEmpty(screens) ? "-" : screens)); }
 
     void OnAgentMessage(string msg)
     {

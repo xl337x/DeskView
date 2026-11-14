@@ -36,7 +36,7 @@ namespace DeskView
             DoubleTapMs = 250;
             HeartbeatMs = 5000;
             ClipboardEnabled = true;
-            AlwaysShowPointer = true;
+            AlwaysShowPointer = true; ShowGuide = true; SmartScreens = true;
             InputEngine = "DeskView";
             ClipboardSizeMb = 3;
             ModifierShift = "shift";
@@ -97,6 +97,11 @@ namespace DeskView
         public bool ClipboardEnabled { get; set; }
         /// <summary>Client: keep the mouse pointer visible (Windows hides it when no mouse is plugged in).</summary>
         public bool AlwaysShowPointer { get; set; }
+        /// <summary>The on-screen guide: a strip on monitors showing the other computer, and a toast when the mouse moves over.</summary>
+        public bool ShowGuide { get; set; }
+        /// <summary>Smart screens: a monitor shows the other computer's extra screen N by itself while that screen holds
+        /// windows (screen 2 -> monitor 1, screen 3 -> monitor 2, ...), and gives itself back when it is empty.</summary>
+        public bool SmartScreens { get; set; }
         /// <summary>"Classic" = the separate keyboard/mouse engine; "DeskView" = DeskView's own encrypted switching and clipboard.</summary>
         public string InputEngine { get; set; }
         /// <summary>True when DeskView turned Mouse Keys on (so turning the option off undoes only our change).</summary>
