@@ -37,7 +37,7 @@ namespace DeskView
             HeartbeatMs = 5000;
             ClipboardEnabled = true;
             AlwaysShowPointer = true;
-            InputEngine = "Classic";
+            InputEngine = "DeskView";
             ClipboardSizeMb = 3;
             ModifierShift = "shift";
             ModifierCtrl = "ctrl";

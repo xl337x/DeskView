@@ -17,6 +17,8 @@ namespace DeskView
         public readonly Media Media;
         readonly DeskViewAgent agent = new DeskViewAgent();
         readonly DeskViewForwarder forwarder = new DeskViewForwarder();
+        readonly DeskViewDiscovery discovery = new DeskViewDiscovery();
+        DateTime lastLink = DateTime.Now;
         readonly Timer timer = new Timer { Interval = 250 };
         string layoutSig = "", lastPortal = null;
         readonly Dictionary<string, DeskViewDropZone> zones = new Dictionary<string, DeskViewDropZone>();
@@ -83,7 +85,10 @@ namespace DeskView
         {
             var p = CurrentPeer();
             if (!string.IsNullOrEmpty(p) && p != S.Peer) { S.Peer = p; S.Save(); }
-            if (!string.IsNullOrEmpty(S.Peer)) agent.AllowedIps = new[] { S.Peer, "::ffff:" + S.Peer };
+            // Classic engine: only its connected partner may use the control channel. Built-in: the pairing code is the
+            // gate (mutual proof + lockout; the firewall allows the local network only) - a remembered address may be old.
+            if (Builtin) agent.AllowedIps = new string[0];
+            else if (!string.IsNullOrEmpty(S.Peer)) agent.AllowedIps = new[] { S.Peer, "::ffff:" + S.Peer };
             return S.Peer;
         }
 
@@ -97,7 +102,7 @@ namespace DeskView
             agent.AvoidLeftEdge = agent.AvoidRightEdge = S.Role == Role.Server;   // The engine's links sit on the outer edges
             SetAgentScreen("1");
             try { agent.Start(); } catch { OnNotice(string.Format("Control port {0} is in use - control from the other computer is off.", S.ControlPort), true); }
-            forwarder.Port = S.ControlPort; forwarder.Code = S.PairCode;
+            forwarder.Port = S.ControlPort; forwarder.Code = S.PairCode; forwarder.Name = S.ComputerName;
             if (S.Role == Role.Client) forwarder.Peer = Peer() ?? "";
             ApplyBuiltin();
             forwarder.Start();
@@ -129,8 +134,9 @@ namespace DeskView
             try { if (S.Role == Role.Server) CoreControl.WriteConfig(S, null); } catch { }   // no portal left behind
             foreach (var z in zones.Values) z.Close();
             forwarder.TakeBack();
+            discovery.Stop();
             forwarder.Stop(); agent.Stop(); Media.StopPlayers(); Media.StopSenders();
-            if (Builtin && S.Role != Role.None) try { CoreControl.Start(); } catch { }   // the mouse keeps working without DeskView
+            if (Builtin && S.Role != Role.None && CoreControl.Installed) try { CoreControl.Start(); } catch { }   // the mouse keeps working without DeskView
         }
 
         /// <summary>Write the engine settings; start or restart the engine when they changed (or when asked).</summary>
@@ -143,14 +149,57 @@ namespace DeskView
             forwarder.MaxClipboardBytes = agent.MaxClipboardBytes = Math.Max(1, S.ClipboardSizeMb) * 1024 * 1024;
             agent.AvoidLeftEdge = agent.AvoidRightEdge = S.Role == Role.Server && !Builtin;
             if (S.Role == Role.Server && Builtin && !string.IsNullOrEmpty(S.Peer)) forwarder.Peer = S.Peer;
-            if (S.Role == Role.Client && Builtin) forwarder.Peer = S.ServerAddress;
+            if (S.Role == Role.Client && Builtin) forwarder.Peer = S.ServerAddress ?? "";
+            StartDiscovery();
+        }
+
+        /// <summary>Built-in engine: the server answers on the local network; a client without a (working) server
+        /// address looks for it. Both sealed with the pairing code.</summary>
+        void StartDiscovery()
+        {
+            if (!Builtin || S.Role == Role.None || !AppSettings.IsValidPairCode(S.PairCode)) { discovery.Stop(); return; }
+            discovery.Code = S.PairCode; discovery.Name = S.ComputerName;
+            if (discovery.Running) return;
+            try
+            {
+                if (S.Role == Role.Server) discovery.StartResponder();
+                else if (string.IsNullOrEmpty(S.ServerAddress)) discovery.StartSeeker(DeskViewDiscovery.BroadcastTargets());
+            }
+            catch (Exception e) { Log.Write("discovery: " + e.Message); }
+        }
+
+        /// <summary>Every 2 s: take what discovery found, look again when the server is gone, learn the other name.</summary>
+        void ServiceDiscovery()
+        {
+            if (!Builtin) return;
+            if (forwarder.Connected) lastLink = DateTime.Now;
+            if (S.Role == Role.Client)
+            {
+                var found = discovery.Found;
+                if (found != null)
+                {
+                    discovery.Found = null;
+                    if (found != S.ServerAddress)
+                    {
+                        S.ServerAddress = found; S.Save(); forwarder.Peer = found;
+                        OnNotice(string.Format("Found {0} at {1}.", string.IsNullOrEmpty(discovery.FoundName) ? "the server" : discovery.FoundName, found), false);
+                    }
+                }
+                else if (!forwarder.Connected && (DateTime.Now - lastLink).TotalSeconds > 15 && !discovery.Running)
+                {
+                    lastLink = DateTime.Now;   // look again (the server may have a new address)
+                    try { discovery.Code = S.PairCode; discovery.StartSeeker(DeskViewDiscovery.BroadcastTargets()); } catch (Exception e) { Log.Write("discovery: " + e.Message); }
+                }
+            }
+            var name = agent.PeerName;
+            if (!string.IsNullOrEmpty(name) && name != S.RemoteName) { S.RemoteName = name; S.Save(); OnChanged(); }
         }
 
         public void ApplyEngine(bool forceStart = false)
         {
             if (S.Role == Role.None) return;
             ApplyBuiltin();
-            if (Builtin) { if (CoreControl.Running) CoreControl.Stop(); return; }   // our own switching: the separate engine stays off
+            if (Builtin) { if (CoreControl.Installed && CoreControl.Running) CoreControl.Stop(); return; }   // our own switching: the separate engine stays off
             bool changed = CoreControl.WriteConfig(S, S.Role == Role.Server ? PortalValue() : null);
             if (changed || forceStart || !CoreControl.Running)
             {
@@ -413,6 +462,7 @@ namespace DeskView
                         Media.StopSenders(); Media.StopPlayers(); lastPortal = null; SyncPlayers();
                         OnNotice("Monitor layout changed - adjusted.", false);
                     }
+                    ServiceDiscovery();
                     var before = S.Peer; Peer();
                     if (S.Role == Role.Client && S.Peer != before) forwarder.Peer = S.Peer;
                     if (Builtin && S.Role == Role.Server && !string.IsNullOrEmpty(S.Peer) && forwarder.Peer != S.Peer) forwarder.Peer = S.Peer;

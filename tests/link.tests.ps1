@@ -1,4 +1,4 @@
-﻿# Tests for DeskView's own keyboard/mouse switching and clipboard sharing (no other engine involved).
+# Tests for DeskView's own keyboard/mouse switching and clipboard sharing (no other engine involved).
 # Everything runs on this machine over loopback with a pretend pointer, desktop and clipboard on the agent
 # side and no input capture on the forwarder side: the real mouse, keyboard and clipboard are never touched.
 $ErrorActionPreference = 'Stop'
@@ -79,6 +79,7 @@ try {
     $io.Wire($fw)
     $fw.Start()
     Check 'forwarder connects (encrypted)' (WaitFor { $fw.Connected } 8000) $fw.Status
+    Check 'each side tells the other its computer name over the link' (WaitFor { $agent.PeerName -eq ($env:COMPUTERNAME -replace '[^\w\-.]', '') }) "agent heard '$($agent.PeerName)'"
     Check 'no switch away from the edge' (-not $fw.TryEnter(1000, 500))
     $sw = $agent.Switches
     Check 'touching the right edge switches to the other machine' ($fw.TryEnter(1919, 300) -and $fw.RemoteOwned)
@@ -95,5 +96,26 @@ try {
     $fw.Stop()
 }
 finally { try { $agent.Stop() } catch {} }
+# ------------------------------------------------------------------------------------- finding the server
+$srv = New-Object DeskViewDiscovery; $srv.Port = 9112; $srv.Code = $code; $srv.Name = 'TEST-SERVER'; $srv.StartResponder()
+try {
+    $cl = New-Object DeskViewDiscovery; $cl.Port = 9112; $cl.Code = $code; $cl.StartSeeker([string[]]@('127.0.0.1'))
+    Check 'a client finds the server with the same pairing code' (WaitFor { $cl.Found -eq '127.0.0.1' } 5000) "found=$($cl.Found) name=$($cl.FoundName)"
+    Check 'and learns its name' ($cl.FoundName -eq 'TEST-SERVER')
+    $cl.Stop()
+    $bad = New-Object DeskViewDiscovery; $bad.Port = 9112; $bad.Code = 'WRONGCODE999'; $before = $srv.Answered; $bad.StartSeeker([string[]]@('127.0.0.1'))
+    Start-Sleep -Milliseconds 3500
+    Check 'a wrong pairing code gets no answer (the server stays silent)' ($bad.Found -eq $null -and $srv.Answered -eq $before) "answered $($srv.Answered - $before)"
+    $bad.Stop()
+    # a fake server that answers without knowing the code is not believed
+    $fake = New-Object Net.Sockets.UdpClient(9113)
+    $cl2 = New-Object DeskViewDiscovery; $cl2.Port = 9113; $cl2.Code = $code; $cl2.StartSeeker([string[]]@('127.0.0.1'))
+    $ep = New-Object Net.IPEndPoint([Net.IPAddress]::Any, 0); $fake.Client.ReceiveTimeout = 4000
+    try { [void]$fake.Receive([ref]$ep); $lie = [Text.Encoding]::ASCII.GetBytes('DVD1R EVIL ' + ('00' * 32)); [void]$fake.Send($lie, $lie.Length, $ep) } catch {}
+    Start-Sleep -Milliseconds 800
+    Check 'a fake server that cannot prove the code is ignored' ($cl2.Found -eq $null)
+    $cl2.Stop(); $fake.Close()
+} finally { $srv.Stop() }
+
 "== link: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

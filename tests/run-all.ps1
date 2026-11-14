@@ -16,6 +16,7 @@ Run 'Sending files (drag and drop)' 'files.tests.ps1'
 Run 'Built-in switching and clipboard' 'link.tests.ps1'
 Run 'C# 5 (compiles on every Windows PC)' 'csharp5.tests.ps1'
 Run 'DeskView app logic' 'app.tests.ps1'
+Run 'Install / update / uninstall (throwaway folders)' 'setup.tests.ps1'
 if ($Live) { Run 'Portal on every monitor (live)' 'portal.tests.ps1' @('-All') }
 Write-Host ''
 if ($failed) { Write-Host "$failed test file(s) failed." -ForegroundColor Red; exit 1 } else { Write-Host 'All tests passed.' -ForegroundColor Green }
