@@ -11,6 +11,9 @@ namespace DeskView.UI
 {
     public class ScreenMap : Control
     {
+        /// <summary>The menu shown by the last click (tests use it to pick an entry like a user would).</summary>
+        public ContextMenuStrip LastMenu;
+
         readonly Engine engine;
         readonly Dictionary<string, RectangleF> hit = new Dictionary<string, RectangleF>();
         string hover;
@@ -31,6 +34,7 @@ namespace DeskView.UI
         {
             if (engine.S.Role != Role.Server) return;
             var menu = new ContextMenuStrip { Font = Theme.Body };
+            LastMenu = menu;
             int n;
             int cur = engine.S.Screens.TryGetValue(monitor, out n) ? n : 0;
             var own = new ToolStripMenuItem("Its own desktop") { Checked = cur == 0 };

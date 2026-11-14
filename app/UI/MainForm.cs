@@ -350,6 +350,7 @@ namespace DeskView.UI
                 if (want == S.InputEngine) return;
                 S.InputEngine = want; S.Save(); engine.ApplyEngine(want == "Classic");
                 Toast(want == "DeskView" ? "DeskView built-in switching is on. Use the same choice on the other computer." : "Classic engine is back on.");
+                BeginInvoke((Action)(() => ShowPage("Switching & input")));   // the options that apply change with the engine
             };
             eng.Controls.Add(Theme.Row("Engine", engPick));
             var ptr = Theme.Card("Mouse pointer", "Windows hides the pointer on a laptop with no mouse plugged in, so the pointer you move from the other computer can be invisible. " +
@@ -359,6 +360,14 @@ namespace DeskView.UI
             var misc = Theme.Card("Connection health and power");
             misc.Controls.Add(Theme.Row("Detect a dead connection", Theme.Check("on", S.HeartbeatEnabled, v => S.HeartbeatEnabled = v), Theme.Number(S.HeartbeatMs, 500, 60000, v => S.HeartbeatMs = v), Theme.Label("ms")));
             misc.Controls.Add(Theme.Check("Keep this computer awake while connected", S.PreventSleep, v => S.PreventSleep = v));
+            if (engine.Builtin)
+            {
+                // These are settings of the classic engine: with DeskView's own switching they have no effect, so say so
+                // instead of offering controls that silently do nothing.
+                eng.Controls.Add(Theme.Hint("With DeskView built-in, the greyed-out options below belong to the classic engine and have no effect. " +
+                    "Clipboard and mouse pointer apply to both engines; the side the other computer is on is set on the Connection page."));
+                foreach (var c in new Control[] { sw, corners, keys, scroll, misc }) c.Enabled = false;
+            }
             foreach (var c in new Control[] { eng, sw, corners, keys, scroll, clip, ptr, misc }) page.Controls.Add(c);
             page.Controls.Add(Theme.Button("Save and apply", (o, e) => { S.Save(); engine.ApplyEngine(); Toast("Saved and applied"); }, true));
             return page;
@@ -374,8 +383,13 @@ namespace DeskView.UI
             var fp = CoreControl.CertificateFingerprint();
             tls.Controls.Add(Theme.Row("This computer's fingerprint", new TextBox { ReadOnly = true, Width = 420, Font = new Font("Consolas", 8.5f), Text = fp.Length > 0 ? fp : "(no certificate yet)" }));
             var dv = Theme.Card("Video and remote control", "Video: AES-256 (SRT) with a key derived from the pairing code. Remote control: the code is never sent - both sides prove they know it " +
-                "(PBKDF2 + HMAC challenge), then every message is AES-256 encrypted and authenticated. Only the paired computer's address is accepted; " +
+                "(PBKDF2 + HMAC challenge), then every message is AES-256 encrypted and authenticated. Finding the other computer on the network is sealed with the code too; " +
                 "5 wrong attempts lock an address out for a minute. Firewall rules allow only the local network.");
+            if (engine.Builtin)
+            {
+                tls.Controls.Add(Theme.Hint("These two options belong to the classic engine. DeskView built-in always encrypts and authenticates everything with the pairing code."));
+                foreach (Control c in tls.Controls) if (c is CheckBox) c.Enabled = false;
+            }
             page.Controls.Add(tls); page.Controls.Add(dv);
             page.Controls.Add(Theme.Button("Save and apply", (o, e) => { S.Save(); engine.ApplyEngine(); Toast("Saved and applied"); }, true));
             return page;
