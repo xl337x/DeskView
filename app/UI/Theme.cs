@@ -104,10 +104,21 @@ namespace DeskView.UI
         /// <summary>Coloured dot + text, for status lines.</summary>
         public static Label Status(string text, Color color)
         {
-            var l = new Label { UseMnemonic = false, AutoSize = true, Font = Body, ForeColor = Text, Margin = new Padding(0, 4, 0, 4), Text = "      " + text };
-            l.Paint += (o, e) => { using (var b = new SolidBrush(color)) e.Graphics.FillEllipse(b, 2, l.Height / 2 - 5, 10, 10); };
+            var l = new Label { UseMnemonic = false, AutoSize = true, Font = Body, ForeColor = Text, Margin = new Padding(0, 4, 0, 4), Text = "      " + text, Tag = color };
+            l.Paint += (o, e) => { using (var b = new SolidBrush((Color)l.Tag)) e.Graphics.FillEllipse(b, 2, l.Height / 2 - 5, 10, 10); };
             return l;
         }
+
+        /// <summary>Changes a status line in place (no flicker): only touches it when the text or colour changed.</summary>
+        public static void SetStatus(Label l, string text, Color color)
+        {
+            var t = "      " + text;
+            if (l.Text != t) l.Text = t;
+            if (!(l.Tag is Color) || (Color)l.Tag != color) { l.Tag = color; l.Invalidate(); }
+        }
+
+        /// <summary>Changes a label's text only when it differs (assigning the same text still repaints).</summary>
+        public static void SetText(Label l, string text) { if (l.Text != text) l.Text = text; }
 
         /// <summary>Copies text, retrying while another program holds the clipboard; never throws.</summary>
         public static bool CopyText(string text)

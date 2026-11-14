@@ -94,25 +94,29 @@ namespace DeskView.UI
             var checks = Theme.Card("Health checks", "If something here is not green, it tells you what to do.");
             page.Controls.Add(status); page.Controls.Add(actions); page.Controls.Add(checks);
 
+            // The rows are made once; each refresh only changes the text/colour that actually changed (no blinking).
+            var vMe = Theme.Label(""); var vOther = Theme.Status("", Theme.Warn); var vEngine = Theme.Status("", Theme.Warn);
+            var vShowing = Theme.Label(""); var vSharing = Theme.Status("", Theme.Warn); var vControl = Theme.Label("");
+            status.Controls.Add(Theme.Row("This computer", vMe));
+            status.Controls.Add(Theme.Row("Other computer", vOther));
+            status.Controls.Add(Theme.Row("Keyboard & mouse", vEngine));
+            status.Controls.Add(Theme.Row("Showing", vShowing));
+            status.Controls.Add(Theme.Row("Sharing my screens", vSharing));
+            status.Controls.Add(Theme.Row("Remote control channel", vControl));
             onRefresh = () =>
             {
-                status.SuspendLayout();
-                while (status.Controls.Count > 1) status.Controls[1].Dispose();
                 string role = S.Role == Role.Server ? "Server - this computer's keyboard and mouse are shared" : S.Role == Role.Client ? "Client - uses the server's keyboard and mouse" : "Not set up yet";
-                status.Controls.Add(Theme.Row("This computer", Theme.Label(string.Format("{0}  ({1})", S.ComputerName, role))));
+                Theme.SetText(vMe, string.Format("{0}  ({1})", S.ComputerName, role));
                 var peer = engine.CurrentPeer();
-                status.Controls.Add(Theme.Row("Other computer", peer != null
-                    ? Theme.Status(string.Format("{0} connected ({1})", Other, peer), Theme.Good)
-                    : Theme.Status(S.Role == Role.Client ? string.Format("not connected - looking for the server at {0}", S.ServerAddress) : string.Format("waiting for {0} to connect", Other), Theme.Warn)));
-                status.Controls.Add(Theme.Row("Keyboard & mouse engine", engine.EngineRunning ? Theme.Status("running", Theme.Good) : Theme.Status("stopped", Theme.Bad)));
-                int live = engine.Media.Players.Values.Count(p => p.Live);
+                if (peer != null) Theme.SetStatus(vOther, string.Format("{0} connected ({1})", Other, peer), Theme.Good);
+                else Theme.SetStatus(vOther, S.Role == Role.Client ? (string.IsNullOrEmpty(S.ServerAddress) ? "not connected - looking for the server on the local network" : string.Format("not connected - looking for the server at {0}", S.ServerAddress)) : string.Format("waiting for {0} to connect", Other), Theme.Warn);
+                string eng = engine.Builtin ? "DeskView built-in" : "classic engine";
+                if (engine.EngineRunning) Theme.SetStatus(vEngine, eng + " - running", Theme.Good); else Theme.SetStatus(vEngine, eng + " - not linked yet", Theme.Bad);
                 string shown = string.Join(", ", engine.Media.Players.Values.Select(p => string.Format("{0} <- screen {1}{2}", p.Key, p.RemoteN, (p.Live ? string.Format(" ({0}x{1})", p.RemoteRes.Value.Width, p.RemoteRes.Value.Height) : " (connecting)"))));
-                status.Controls.Add(Theme.Row("Showing", Theme.Label(shown.Length > 0 ? shown : "nothing (choose on the Screens page)")));
+                Theme.SetText(vShowing, shown.Length > 0 ? shown : "nothing (choose on the Screens page)");
                 int senders = engine.Media.Senders.Values.Count(s => s.P != null && !s.P.HasExited);
-                status.Controls.Add(Theme.Row("Sharing my screens", senders > 0 ? Theme.Status(string.Format("{0} screen(s) ready to be viewed (encrypted)", senders), Theme.Good) : Theme.Status("not yet", Theme.Warn)));
-                string ctl = engine.AgentClient.Length > 0 ? string.Format("{0} is controlling this computer", Other) : engine.ForwarderConnected ? "connected (encrypted)" : "ready";
-                status.Controls.Add(Theme.Row("Remote control channel", Theme.Label(ctl)));
-                status.ResumeLayout();
+                if (senders > 0) Theme.SetStatus(vSharing, string.Format("{0} screen(s) ready to be viewed (encrypted)", senders), Theme.Good); else Theme.SetStatus(vSharing, "not yet", Theme.Warn);
+                Theme.SetText(vControl, engine.AgentClient.Length > 0 ? string.Format("{0} is linked to this computer (encrypted)", Other) : engine.ForwarderConnected ? "connected (encrypted)" : "ready");
             };
             onRefresh();
 

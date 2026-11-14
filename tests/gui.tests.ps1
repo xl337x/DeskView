@@ -108,6 +108,14 @@ $engine = [Activator]::CreateInstance($EngineType, @($s))
 $tray = [Activator]::CreateInstance((T 'DeskView.TrayApp'), @($engine, $true)); Pump 800
 $form = (T 'DeskView.TrayApp').GetField('window', $bf).GetValue($tray)
 Check 'window opens' ($form -ne $null -and $form.Visible)
+# Overview refreshes every second: it must update its lines in place, not rebuild them (rebuilding blinks)
+$form.ShowPage('Overview'); Pump 300
+$before = @(All-Controls $form | ? { $_ -is [Windows.Forms.Label] })
+$refresh = $form.GetType().GetField('onRefresh', $bf).GetValue($form)
+1..3 | % { $refresh.Invoke(); Pump 100 }
+$after = @(All-Controls $form | ? { $_ -is [Windows.Forms.Label] })
+$same = $before.Count -eq $after.Count -and @(0..($before.Count - 1) | ? { -not [object]::ReferenceEquals($before[$_], $after[$_]) }).Count -eq 0
+Check 'Overview: live refresh updates in place (no blinking)' $same "$($before.Count) labels before, $($after.Count) after"
 $form.Size = New-Object Drawing.Size 1000, 760; Pump 300
 
 $pages = 'Overview', 'What you can do', 'Screens', 'Connection', 'Switching & input', 'Security', 'Logs', 'About'
