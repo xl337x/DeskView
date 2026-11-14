@@ -300,8 +300,12 @@ namespace DeskView
 
         void SetAgentScreen(string want)
         {
-            var name = ResolveMonitor(want);
-            var m = name != null ? Tools.ByName(name) : Screen.PrimaryScreen;
+            // the other computer asks by stream number (main screen first, like the video) or by DISPLAYn
+            Screen m = null; int n;
+            var shared = Tools.SharedScreens();
+            if (int.TryParse(want, out n)) { if (n >= 1 && n <= shared.Length) m = shared[n - 1]; }
+            else { var name = ResolveMonitor(want); if (name != null) m = Tools.ByName(name); }
+            if (m == null) m = Screen.PrimaryScreen;
             agent.TL = m.Bounds.Left; agent.TT = m.Bounds.Top; agent.TW = m.Bounds.Width; agent.TH = m.Bounds.Height;
         }
 

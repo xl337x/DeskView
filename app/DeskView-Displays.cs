@@ -60,21 +60,25 @@ public static class DeskViewDisplays
         return l.ToArray();
     }
 
-    /// <summary>Puts every virtual screen at width x height, in a row to the right of the computer's own screens.
-    /// Returns what was done, one line per screen.</summary>
-    public static string[] Arrange(int width, int height)
+    /// <summary>Puts every virtual screen at width x height in a row beside the computer's own screens: on the left
+    /// (the first one right next to them, the next further out - so with the laptop to the right of the other
+    /// computer's monitors, dragging a window left off the laptop lands on the nearest monitor first) or on the
+    /// right. Returns what was done, one line per screen.</summary>
+    public static string[] Arrange(int width, int height) { return Arrange(width, height, false); }
+
+    public static string[] Arrange(int width, int height, bool left)
     {
         SetThreadDpiAwarenessContext(new IntPtr(-4));   // physical pixels
         var log = new List<string>();
-        int right = 0; var virt = new List<string>();
+        int right = 0, leftEdge = 0; var virt = new List<string>();
         foreach (var dd in Devices())
         {
             if ((dd.StateFlags & ATTACHED) == 0) continue;
             if (IsVirtual(dd)) { virt.Add(dd.DeviceName); continue; }
             var cur = new DEVMODE(); cur.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
-            if (EnumDisplaySettings(dd.DeviceName, ENUM_CURRENT_SETTINGS, ref cur)) right = Math.Max(right, cur.dmPositionX + cur.dmPelsWidth);
+            if (EnumDisplaySettings(dd.DeviceName, ENUM_CURRENT_SETTINGS, ref cur)) { right = Math.Max(right, cur.dmPositionX + cur.dmPelsWidth); leftEdge = Math.Min(leftEdge, cur.dmPositionX); }
         }
-        int x = right;
+        int x = left ? leftEdge - width : right;
         foreach (var name in virt)
         {
             var dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE)); bool found = false;
@@ -83,7 +87,7 @@ public static class DeskViewDisplays
             dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_POSITION; dm.dmPositionX = x; dm.dmPositionY = 0;
             int r = ChangeDisplaySettingsEx(name, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
             log.Add(string.Format("{0}: {1}x{2} at {3},0 ({4})", name, width, height, x, r == 0 ? "ok" : "error " + r));
-            x += width;
+            x += left ? -width : width;
         }
         if (virt.Count > 0) ChangeDisplaySettingsEx(null, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);   // apply all at once
         return log.ToArray();

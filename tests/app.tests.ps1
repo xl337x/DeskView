@@ -85,6 +85,10 @@ if ($screens.Count -ge 2) {
 }
 Check 'monitor lookup: 1 = left-most, DISPLAYn by name, unknown = none' ($Engine::ResolveMonitor('1') -eq ($screens[0].DeviceName -replace '^\\\\\.\\','') -and $Engine::ResolveMonitor('DISPLAY999') -eq $null -and $Engine::ResolveMonitor('99') -eq $null)
 
+# ---------------------------------------------------------------------------------------------- screen numbering offered to the other computer
+$shared = @(([DeskView.Tools]::SharedScreens()))
+Check 'the main screen is always offered as screen 1 (then left to right)' ($shared[0].Primary -and (@($shared | Select -Skip 1 | % { $_.Bounds.X }) -join ',') -eq (@($shared | Select -Skip 1 | Sort-Object { $_.Bounds.X } | % { $_.Bounds.X }) -join ','))
+
 # ---------------------------------------------------------------------------------------------- every screen can be captured
 $outs = [DeskViewDxgi]::AllOutputs(); $names = @($outs | % Name)
 $missing = @($screens | % { $_.DeviceName -replace '^\\\\\.\\', '' } | ? { $names -notcontains $_ })

@@ -19,6 +19,7 @@ param(
     [ValidateSet('', 'Server', 'Client')] [string]$Role = '',
     [string]$ServerAddress,                                        # client: the server's address (else found on the network)
     [ValidateRange(-1, 4)] [int]$VirtualScreens = -1,              # add N virtual screens (0 removes them; -1 leaves them)
+    [ValidateSet('Left', 'Right')] [string]$VirtualScreensSide = 'Left',   # where they sit next to this computer's own screens
     [switch]$ClassicEngine,                                        # also install the classic keyboard/mouse engine (optional)
     [switch]$Uninstall,
     [switch]$NoStart,             # tests: install only, don't start DeskView or add it to startup
@@ -108,7 +109,7 @@ function Arrange-VirtualScreens {
     try {
         Add-Type -Path (Join-Path $PSScriptRoot 'DeskView-Displays.cs') -ErrorAction Stop
         if ([DeskViewDisplays]::VirtualScreens().Count -eq 0) { & "$env:WINDIR\System32\DisplaySwitch.exe" /extend; Start-Sleep 6 }
-        [DeskViewDisplays]::Arrange(1920, 1080) | % { Write-Host "        $_" }
+        [DeskViewDisplays]::Arrange(1920, 1080, ($VirtualScreensSide -eq 'Left')) | % { Write-Host "        $_" }
     } catch { Write-Warning "Arranging the virtual screens failed: $($_.Exception.Message) - use Settings > System > Display." }
 }
 # ---- elevated parts ------------------------------------------------------------------------------------
@@ -173,6 +174,13 @@ if ($Uninstall) {
 Write-Host '== DeskView setup ==' -ForegroundColor Cyan
 if (-not $Source) { $Source = $PSScriptRoot }
 if (-not (Test-Path (Join-Path $Source 'DeskView.ps1'))) { throw "No DeskView app in '$Source' (run install.ps1, or pass -Source <checkout>\app)." }
+
+# A laptop's windows can only go onto the other computer's monitors through extra (virtual) screens: offer them.
+if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin) {
+    Write-Host 'This laptop''s windows can be dragged onto the server''s monitors through extra screens (one per monitor).'
+    $answer = Read-Host '   How many extra screens should this laptop get? (0-4, Enter = 3)'
+    $VirtualScreens = if ($answer -match '^[0-4]$') { [int]$answer } else { 3 }
+}
 
 # 1. Administrator part - only when something is actually missing.
 $rules = @(Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | % DisplayName)
@@ -251,6 +259,14 @@ if (-not $Role) {
         $Role = if ($isServerAnswer) { 'Server' } else { 'Client' }
         Write-Host '   Then set up the other computer the same way (as the other role).'
     }
+}
+# The role was only learned just now: offer a client its extra screens here (same question as above).
+if ($VirtualScreens -lt 0 -and $Role -eq 'Client' -and $canAsk -and -not $SkipAdmin) {
+    Write-Host 'This laptop''s windows can be dragged onto the server''s monitors through extra screens (one per monitor).'
+    $answer = Read-Host '   How many extra screens should this laptop get? (0-4, Enter = 3)'
+    $VirtualScreens = if ($answer -match '^[0-4]$') { [int]$answer } else { 3 }
+    if (Run-Elevated "-Elevated -VirtualScreens $VirtualScreens") { if ($VirtualScreens -gt 0) { Arrange-VirtualScreens } }
+    else { Write-Warning 'The extra screens were not added (see above).' }
 }
 $codePattern = '^[2-9A-HJKMNP-Z]{8,12}$'
 if ($Role -eq 'Server') {

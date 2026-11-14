@@ -1,4 +1,4 @@
-<#
+﻿<#
   DeskView installer - downloads DeskView from GitHub (one zip) and runs its setup.
 
   Download it to a file and run it (antivirus products rightly distrust scripts piped straight into iex):
@@ -12,6 +12,7 @@ param(
     [ValidateSet('', 'Server', 'Client')] [string]$Role = '',
     [string]$ServerAddress,
     [ValidateRange(-1, 4)] [int]$VirtualScreens = -1,
+    [ValidateSet('Left', 'Right')] [string]$VirtualScreensSide = 'Left',
     [switch]$ClassicEngine,
     [switch]$Uninstall,
     [string]$Repo = 'xl337x/DeskView',
@@ -45,7 +46,7 @@ $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $app 'Des
 if ($PairCode) { $a += @('-PairCode', $PairCode) }
 if ($Role) { $a += @('-Role', $Role) }
 if ($ServerAddress) { $a += @('-ServerAddress', $ServerAddress) }
-if ($VirtualScreens -ge 0) { $a += @('-VirtualScreens', [string]$VirtualScreens) }
+if ($VirtualScreens -ge 0) { $a += @('-VirtualScreens', [string]$VirtualScreens, '-VirtualScreensSide', $VirtualScreensSide) }
 if ($ClassicEngine) { $a += '-ClassicEngine' }
 if ($Uninstall) { $a += '-Uninstall' }
 & powershell @a
