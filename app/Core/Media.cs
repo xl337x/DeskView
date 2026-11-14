@@ -31,6 +31,9 @@ namespace DeskView
         /// <summary>Monitors left to right (then top to bottom): screen n = the n-th one.</summary>
         public static Screen[] OrderedScreens() { return Screen.AllScreens.OrderBy(s => s.Bounds.X).ThenBy(s => s.Bounds.Y).ToArray(); }
         public static string Short(Screen s) { return s.DeviceName.Replace(@"\\.\", ""); }
+        /// <summary>The order this computer's screens are offered to the other computer: the main screen is always
+        /// screen 1 (even when extra screens sit to its left), the others follow left to right.</summary>
+        public static Screen[] SharedScreens() { return Screen.AllScreens.OrderBy(s => s.Primary ? 0 : 1).ThenBy(s => s.Bounds.X).ThenBy(s => s.Bounds.Y).ToArray(); }
         public static Screen ByName(string name) { return OrderedScreens().FirstOrDefault(s => Short(s) == name); }
 
         /// <summary>Wired or Wi-Fi, from the adapter that carries the default route.</summary>
@@ -165,7 +168,7 @@ namespace DeskView
         {
             if (ffmpeg == null || NoMedia) return;
             var outputs = DeskViewDxgi.AllOutputs();   // every screen on every graphics adapter
-            var screens = Tools.OrderedScreens();
+            var screens = Tools.SharedScreens();
             var wanted = new HashSet<int>();
             for (int i = 0; i < screens.Length; i++)
             {
