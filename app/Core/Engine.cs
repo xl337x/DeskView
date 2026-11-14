@@ -103,6 +103,7 @@ namespace DeskView
             SetAgentScreen("1");
             try { agent.Start(); } catch { OnNotice(string.Format("Control port {0} is in use - control from the other computer is off.", S.ControlPort), true); }
             forwarder.Port = S.ControlPort; forwarder.Code = S.PairCode; forwarder.Name = S.ComputerName;
+            forwarder.CountInjected = Environment.GetEnvironmentVariable("DESKVIEW_QA_INPUT") == "1";   // live QA with synthetic input
             if (S.Role == Role.Client) forwarder.Peer = Peer() ?? "";
             ApplyBuiltin();
             forwarder.Start();
