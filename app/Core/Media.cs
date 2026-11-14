@@ -122,7 +122,7 @@ namespace DeskView
         // -------------------------------------------------------------------------------------------------- senders
         public void StopSenders() { foreach (var s in Senders.Values) Kill(s.P); Senders.Clear(); }
 
-        void StartSender(int n, Screen screen, int dxgiIndex, Sender st)
+        void StartSender(int n, Screen screen, DeskViewDxgi.Output output, Sender st)
         {
             string prof = Profile, enc = Encoder();
             int mbps = BitrateMbps[prof]; string b = mbps + "M", buf = (mbps * 500) + "k";
@@ -138,15 +138,22 @@ namespace DeskView
             int port = S.VideoPort + n - 1;
             string url = "srt://0.0.0.0:" + port + "?mode=listener&latency=" + (LatencyMs[prof] * 1000) + "&pkt_size=1316&transtype=live&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             // Frames stay on the GPU when the encoder can take them (~3x less CPU); CPU path if that keeps failing.
-            string cap = "ddagrab=output_idx=" + dxgiIndex + ":framerate=60:draw_mouse=1", chain, pix = "";
-            if (!cpuPath && enc == "h264_qsv") chain = cap + ",hwmap=derive_device=qsv,format=qsv";
+            string cap = "ddagrab=output_idx=" + output.Index + ":framerate=60:draw_mouse=1", chain, pix = "", device = "";
+            if (output.Adapter != 0)
+            {
+                // A screen on another graphics adapter (a second GPU, or a virtual screen rendered there): capture it
+                // with a device on that adapter and encode from memory - works with any mix of adapters and encoders.
+                device = "-init_hw_device d3d11va=dv:" + output.Adapter + " -filter_hw_device dv ";
+                chain = cap + ",hwdownload,format=bgra"; pix = "-pix_fmt nv12";
+            }
+            else if (!cpuPath && enc == "h264_qsv") chain = cap + ",hwmap=derive_device=qsv,format=qsv";
             else if (!cpuPath && (enc == "h264_nvenc" || enc == "h264_amf")) chain = cap;
             else { chain = cap + ",hwdownload,format=bgra"; pix = "-pix_fmt nv12"; }
             st.Gpu = !chain.Contains("hwdownload");
             var r = screen.Bounds;
             // The stream says which screen it is and where it sits, so the viewer maps its portal onto it.
             string meta = "DeskView|" + n + "|" + r.X + "," + r.Y + "," + r.Width + "," + r.Height;
-            st.P = Start(ffmpeg, "-hide_banner -loglevel error -f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", null);
+            st.P = Start(ffmpeg, "-hide_banner -loglevel error " + device + "-f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", null);
             st.Started = DateTime.Now; st.Name = Tools.Short(screen);
         }
 
@@ -157,13 +164,15 @@ namespace DeskView
         public void ServiceSenders()
         {
             if (ffmpeg == null || NoMedia) return;
-            var outputs = DeskViewDxgi.DdagrabOutputs();
+            var outputs = DeskViewDxgi.AllOutputs();   // every screen on every graphics adapter
             var screens = Tools.OrderedScreens();
             var wanted = new HashSet<int>();
             for (int i = 0; i < screens.Length; i++)
             {
-                int n = i + 1, idx = Array.IndexOf(outputs, Tools.Short(screens[i]));
-                if (idx < 0) continue;
+                int n = i + 1;
+                var name = Tools.Short(screens[i]);
+                var output = outputs.FirstOrDefault(o => o.Name == name);
+                if (output == null) continue;
                 wanted.Add(n);
                 Sender st;
                 if (!Senders.TryGetValue(n, out st)) Senders[n] = st = new Sender { N = n };
@@ -172,7 +181,7 @@ namespace DeskView
                 if (st.Fails >= 2 && st.Gpu) { cpuPath = true; st.Fails = 0; }
                 st.P = null;
                 if (st.RetryAt == null) st.RetryAt = DateTime.Now.AddSeconds(st.Fails > 0 ? Math.Min(30, 0.5 * Math.Pow(2, st.Fails)) : 0);
-                if (DateTime.Now >= st.RetryAt) { st.RetryAt = null; StartSender(n, screens[i], idx, st); }
+                if (DateTime.Now >= st.RetryAt) { st.RetryAt = null; StartSender(n, screens[i], output, st); }
             }
             foreach (var n in Senders.Keys.Where(k => !wanted.Contains(k)).ToList()) { Kill(Senders[n].P); Senders.Remove(n); }
         }

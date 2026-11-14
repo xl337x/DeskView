@@ -85,6 +85,11 @@ if ($screens.Count -ge 2) {
 }
 Check 'monitor lookup: 1 = left-most, DISPLAYn by name, unknown = none' ($Engine::ResolveMonitor('1') -eq ($screens[0].DeviceName -replace '^\\\\\.\\','') -and $Engine::ResolveMonitor('DISPLAY999') -eq $null -and $Engine::ResolveMonitor('99') -eq $null)
 
+# ---------------------------------------------------------------------------------------------- every screen can be captured
+$outs = [DeskViewDxgi]::AllOutputs(); $names = @($outs | % Name)
+$missing = @($screens | % { $_.DeviceName -replace '^\\\\\.\\', '' } | ? { $names -notcontains $_ })
+Check "every monitor is found for capture, on whichever graphics adapter ($(($outs | % { "$($_.Name)@$($_.Adapter):$($_.Index)" }) -join ', '))" ($missing.Count -eq 0) "missing: $($missing -join ', ')"
+
 # ---------------------------------------------------------------------------------------------- picture placement
 $Media = & $T 'DeskView.Media'; $Player = & $T 'DeskView.Player'
 $sFit = [Activator]::CreateInstance($Settings); $media = [Activator]::CreateInstance($Media, @($sFit))
