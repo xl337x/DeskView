@@ -1,4 +1,4 @@
-﻿# Tests for the DeskView app's logic: compiles and loads app\**\*.cs exactly like DeskView.ps1 does for users, and checks its building blocks
+# Tests for the DeskView app's logic: compiles and loads app\**\*.cs exactly like DeskView.ps1 does for users, and checks its building blocks
 # without starting the app. Build it first: gui\build.ps1
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Web.Extensions
@@ -32,6 +32,14 @@ $s2.SwitchDelayEnabled = $true; $s2.SwitchDelayMs = 333; $s2.RemoteSide = [Enum]
 $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 $back = $ser.Deserialize($ser.Serialize($s2), $Settings)
 Check 'settings survive a save/load round trip' ($back.RemoteName -eq 'leet' -and $back.Screens['DISPLAY2'] -eq 2 -and $back.SwitchDelayMs -eq 333 -and "$($back.RemoteSide)" -eq 'Bottom' -and "$($back.Role)" -eq 'Server')
+
+# ---------------------------------------------------------------------------------------------- engine choice kept on update
+$tmpHome = Join-Path $env:TEMP "dv-app-old-$PID"; New-Item -ItemType Directory -Force $tmpHome | Out-Null
+Set-Content (Join-Path $tmpHome 'app.json') '{"Role":1,"PairCode":"D4BBUPSD","RemoteName":"leet"}' -Encoding UTF8
+[Environment]::SetEnvironmentVariable('DESKVIEW_HOME', $tmpHome)
+$loaded = $Settings::Load()
+Check 'settings from before the engine choice keep the classic engine (an update never switches it)' ($loaded.InputEngine -eq 'Classic') $loaded.InputEngine
+[Environment]::SetEnvironmentVariable('DESKVIEW_HOME', $null); [IO.Directory]::Delete($tmpHome, $true)
 
 # ---------------------------------------------------------------------------------------------- engine settings + layout
 $Core = & $T 'DeskView.CoreControl'

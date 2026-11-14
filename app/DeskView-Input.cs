@@ -644,6 +644,7 @@ public class DeskViewForwarder
     public volatile bool Active;                          // forward input only while viewing
     public bool AcceptInjected;                           // tests only: also treat synthetic input as physical
     public bool NoHooks;                                  // tests only: don't capture this machine's real input
+    public bool CountInjected;                            // live QA only (DESKVIEW_QA_INPUT=1): synthetic input counts as physical
     public volatile bool HotkeysEnabled = true;           // detect DeskView hotkeys from the physical keyboard only
     public volatile string Status = "idle";
     public volatile bool Connected;
@@ -821,7 +822,7 @@ public class DeskViewForwarder
             {
                 var m = (DvNative.MSLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(DvNative.MSLLHOOKSTRUCT));
                 bool injected = (m.flags & 0x1) != 0;
-                if ((!injected || AcceptInjected) && m.extra != DvNative.AgentMarker)
+                if ((!injected || AcceptInjected || CountInjected) && m.extra != DvNative.AgentMarker)
                 {
                     if (RemoteOwned) { RemoteMouse((int)w, m); return (IntPtr)1; }       // all of it happens over there
                     if (TryEnter(m.pt.X, m.pt.Y)) return (IntPtr)1;
@@ -831,7 +832,7 @@ public class DeskViewForwarder
             {
                 var m = (DvNative.MSLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(DvNative.MSLLHOOKSTRUCT));
                 bool injected = (m.flags & 0x1) != 0;
-                if ((!injected || AcceptInjected) && m.extra != DvNative.AgentMarker)
+                if ((!injected || AcceptInjected || CountInjected) && m.extra != DvNative.AgentMarker)
                 {
                     int msg = (int)w, x = m.pt.X, y = m.pt.Y;
                     bool inPic = InPicture(x, y);
@@ -984,7 +985,7 @@ public class DeskViewForwarder
             bool injected = (k.flags & 0x10) != 0;
             bool down = ((int)w == 0x0100 || (int)w == 0x0104);   // WM_KEYDOWN / WM_SYSKEYDOWN
             int vk = (int)k.vkCode;
-            bool physical = (!injected || AcceptInjected) && k.extra != DvNative.AgentMarker;
+            bool physical = (!injected || AcceptInjected || CountInjected) && k.extra != DvNative.AgentMarker;
             bool fwd = Forwarding || (RemoteOwned && Connected);
             if (physical)
             {

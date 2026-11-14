@@ -142,8 +142,16 @@ namespace DeskView
             {
                 if (File.Exists(FilePath))
                 {
-                    var s = new JavaScriptSerializer().Deserialize<AppSettings>(File.ReadAllText(FilePath));
-                    if (s != null) { s.Screens = s.Screens ?? new Dictionary<string, int>(); return s; }
+                    var text = File.ReadAllText(FilePath);
+                    var s = new JavaScriptSerializer().Deserialize<AppSettings>(text);
+                    if (s != null)
+                    {
+                        s.Screens = s.Screens ?? new Dictionary<string, int>();
+                        // Settings from before the engine choice existed: that computer was set up with the classic
+                        // engine, and the other computer still uses it - keep it (switching both is the user's call).
+                        if (!text.Contains("\"InputEngine\"")) s.InputEngine = "Classic";
+                        return s;
+                    }
                 }
             }
             catch { }
