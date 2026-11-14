@@ -134,19 +134,20 @@ function Arrange-VirtualScreens {
 # ---- elevated parts ------------------------------------------------------------------------------------
 if ($RemoveRules) {
     Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-    # the extra screens: without DeskView they are invisible monitors where windows and the pointer get lost
+    # the extra screens: without DeskView they are invisible monitors where windows and the pointer get lost.
+    # Only if DeskView installed them (its marker file): someone's own virtual display driver is left alone.
     $cfgDir = 'C:\VirtualDisplayDriver'
-    Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { $_.FriendlyName -match 'Virtual Display' -or ($_.HardwareID -join ' ') -match 'MttVDD' } |
-        % { pnputil /remove-device $_.InstanceId | Out-Null }
-    $drivers = (pnputil /enum-drivers | Out-String) -split '\r?\n\s*\r?\n'
-    foreach ($d in $drivers | ? { $_ -match '(?i)mttvdd\.inf' }) { if ($d -match '(oem\d+\.inf)') { pnputil /delete-driver $Matches[1] /uninstall /force | Out-Null } }
     $thumbFile = Join-Path $cfgDir 'deskview-cert.txt'
     if (Test-Path $thumbFile) {
+        Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { ($_.HardwareID -join ' ') -match 'MttVDD' } |
+            % { pnputil /remove-device $_.InstanceId | Out-Null }
+        $drivers = (pnputil /enum-drivers | Out-String) -split '\r?\n\s*\r?\n'
+        foreach ($d in $drivers | ? { $_ -match '(?i)mttvdd\.inf' }) { if ($d -match '(oem\d+\.inf)') { pnputil /delete-driver $Matches[1] /uninstall /force | Out-Null } }
         $thumb = (Get-Content $thumbFile -Raw).Trim()
         $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine'); $store.Open('ReadWrite')
         $store.Certificates | ? { $_.Thumbprint -eq $thumb } | % { $store.Remove($_) }; $store.Close()
-    }
-    if (Test-Path $cfgDir) { [IO.Directory]::Delete($cfgDir, $true) }
+        [IO.Directory]::Delete($cfgDir, $true)
+    } elseif (Test-Path $cfgDir) { Write-Host 'A virtual display driver DeskView did not install was left in place.' }
     exit 0
 }
 if ($Elevated) {
@@ -199,7 +200,7 @@ if ($Uninstall) {
     foreach ($dir in $installDir, $settingsDir) { if (Test-Path $dir) { [IO.Directory]::Delete($dir, $true) } }
     # an older DeskView started itself from the Run key
     Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name DeskView -ErrorAction SilentlyContinue
-    $vdd = (Test-Path 'C:\VirtualDisplayDriver') -or (Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { ($_.HardwareID -join ' ') -match 'MttVDD' })
+    $vdd = Test-Path 'C:\VirtualDisplayDriver\deskview-cert.txt'   # extra screens DeskView installed
     if (-not $SkipAdmin -and ((Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue) -or $vdd)) {
         Write-Host 'Removing the firewall rules and extra screens (a Windows prompt will appear)...'
         [void](Run-Elevated '-RemoveRules')
@@ -217,17 +218,22 @@ if (-not (Test-Path (Join-Path $Source 'DeskView.ps1'))) { throw "No DeskView ap
 
 # 1. Role and pairing.
 New-Item -ItemType Directory -Force $settingsDir | Out-Null
-function Get-KnownCode {
-    foreach ($f in 'app.json', 'settings.json') {
+# DeskView's settings, else the copy it keeps from the save before (a file cut short must not cost the pairing)
+function Read-AppJson {
+    foreach ($f in 'app.json', 'app.json.bak') {
         $p = Join-Path $settingsDir $f
-        if (Test-Path $p) { try { $c = (Get-Content $p -Raw | ConvertFrom-Json).PairCode; if ($c) { return $c } } catch { } }
+        if (Test-Path $p) { try { $o = Get-Content $p -Raw | ConvertFrom-Json; if ($o) { return $o } } catch { } }
     }
     $null
 }
-$known = Get-KnownCode
+$appJson = Read-AppJson
+$known = if ($appJson -and $appJson.PairCode) { $appJson.PairCode } else { $null }
+if (-not $known) {
+    $p = Join-Path $settingsDir 'settings.json'   # the older script version's settings
+    if (Test-Path $p) { try { $known = (Get-Content $p -Raw | ConvertFrom-Json).PairCode } catch { } }
+}
 $knownRole = $null
-$p = Join-Path $settingsDir 'app.json'
-if (Test-Path $p) { try { $r = (Get-Content $p -Raw | ConvertFrom-Json).Role; if ($r -eq 1) { $knownRole = 'Server' } elseif ($r -eq 2) { $knownRole = 'Client' } } catch { } }
+if ($appJson) { if ($appJson.Role -eq 1) { $knownRole = 'Server' } elseif ($appJson.Role -eq 2) { $knownRole = 'Client' } }
 if ($Role -and $knownRole -and $Role -ne $knownRole) {
     # a server's own code is not the code of the server a client must join (and the other way round)
     Write-Host "   Role changed ($knownRole -> $Role): the old pairing is replaced."
@@ -327,7 +333,10 @@ if (-not $ffCurrent) {
     } finally { $z.Dispose() }
     if (-not (Test-FFmpeg (Join-Path $ffNew 'ffmpeg.exe'))) { [IO.Directory]::Delete($ffNew, $true); throw 'FFmpeg cannot capture the screen or use SRT on this PC. DeskView was not changed.' }
     Set-Content (Join-Path $ffNew $ffStamp) $ffName
-} else { Write-Host 'Step 2/4: FFmpeg already in place.' }
+} else {
+    Write-Host 'Step 2/4: FFmpeg already in place.'
+    if (Test-Path $ffNew) { try { [IO.Directory]::Delete($ffNew, $true) } catch { } }   # a leftover from an interrupted setup
+}
 
 # 4. Stop, update and start again. If anything fails here, whatever DeskView is in place is started again anyway.
 Write-Host "Step 3/4: installing to $installDir"
@@ -337,22 +346,26 @@ try {
     $src = (Resolve-Path $Source).Path.TrimEnd('\'); $dst = (Resolve-Path $installDir).Path.TrimEnd('\')
     if ($src -ne $dst) {
         # mirror, but keep FFmpeg
-        $null = robocopy $src $dst /MIR /XD ffmpeg ffmpeg.new /NFL /NDL /NJH /NJS /NP
+        $null = robocopy $src $dst /MIR /XD ffmpeg ffmpeg.new ffmpeg.old /NFL /NDL /NJH /NJS /NP
         if ($LASTEXITCODE -ge 8) { throw "Copying DeskView failed (robocopy $LASTEXITCODE)." }
     }
     if (Test-Path $ffNew) {
-        for ($i = 0; $i -lt 10 -and (Test-Path $ffDir); $i++) {   # its players may take a moment to exit
-            try { [IO.Directory]::Delete($ffDir, $true) } catch { Start-Sleep -Milliseconds 500 }
+        # whole folders are renamed (a rename fails as a whole, leaving everything as it was): the old FFmpeg moves
+        # aside, the new one moves in, and the old one comes back if the new one can't be put in place
+        $ffOld = "$ffDir.old"
+        if (Test-Path $ffOld) { try { [IO.Directory]::Delete($ffOld, $true) } catch { } }
+        if (Test-Path $ffDir) {
+            for ($i = 0; $i -lt 10 -and (Test-Path $ffDir); $i++) { try { [IO.Directory]::Move($ffDir, $ffOld) } catch { Start-Sleep -Milliseconds 500 } }   # its players may take a moment to exit
+            if (Test-Path $ffDir) { throw "The old FFmpeg in $ffDir is still in use - close DeskView and run setup again." }
         }
-        if (Test-Path $ffDir) { throw "The old FFmpeg in $ffDir is still in use - close DeskView and run setup again." }
-        # the virus scanner may still be reading the new files for a moment: try again, else copy them over
-        for ($i = 0; $i -lt 20 -and (Test-Path $ffNew); $i++) {
-            try { [IO.Directory]::Move($ffNew, $ffDir) } catch { Start-Sleep -Milliseconds 500 }
+        # the virus scanner may still be reading the new files for a moment
+        for ($i = 0; $i -lt 20 -and (Test-Path $ffNew); $i++) { try { [IO.Directory]::Move($ffNew, $ffDir) } catch { Start-Sleep -Milliseconds 500 } }
+        if ((Test-Path $ffNew) -or -not ((Test-Path (Join-Path $ffDir $ffStamp)) -and (Test-FFmpeg (Join-Path $ffDir 'ffmpeg.exe')))) {
+            if (Test-Path $ffDir) { try { [IO.Directory]::Delete($ffDir, $true) } catch { } }
+            if (Test-Path $ffOld) { [IO.Directory]::Move($ffOld, $ffDir) }
+            throw "Could not put the new FFmpeg in place ($ffDir) - the previous one is kept."
         }
-        if (Test-Path $ffNew) {
-            $null = robocopy $ffNew $ffDir /E /MOVE /R:5 /W:1 /NFL /NDL /NJH /NJS /NP
-            if (-not (Test-Path (Join-Path $ffDir 'ffmpeg.exe'))) { throw "Could not put FFmpeg in place ($ffDir)." }
-        }
+        try { [IO.Directory]::Delete($ffOld, $true) } catch { }
     }
     # role and pairing are handed to DeskView in setup.json, which it applies at its next start
     $handoff = [ordered]@{ Role = $Role; PairCode = $PairCode.Trim().ToUpper() }
@@ -361,10 +374,12 @@ try {
 } finally {
     if (-not $NoStart -and (Test-Path $app)) {
         Write-Host 'Step 4/4: starting DeskView and adding it to startup'
-        $sh = New-Object -ComObject WScript.Shell
-        $sc = $sh.CreateShortcut($startupLink); $sc.TargetPath = 'powershell.exe'
-        $sc.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$app`" -Tray"; $sc.WindowStyle = 7; $sc.Description = 'DeskView'; $sc.Save()
         Start-Process powershell -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$app`"" -WindowStyle Hidden
+        try {
+            $sh = New-Object -ComObject WScript.Shell
+            $sc = $sh.CreateShortcut($startupLink); $sc.TargetPath = 'powershell.exe'
+            $sc.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$app`" -Tray"; $sc.WindowStyle = 7; $sc.Description = 'DeskView'; $sc.Save()
+        } catch { Write-Warning "Could not add DeskView to startup: $($_.Exception.Message)" }
     }
 }
 if ($NoStart) { Write-Host 'Step 4/4: not started (-NoStart).' }

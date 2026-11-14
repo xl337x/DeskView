@@ -508,7 +508,9 @@ public class DeskViewAgent
         catch (Exception e)
         {
             // tell the sender why (disk full, ...) instead of just hanging up
-            try { DvProto.WriteFrame(s, keys, ++replySeq, "<ERR " + e.Message.Replace('\r', ' ').Replace('\n', ' ')); } catch { }
+            var why = e.Message.Replace('\r', ' ').Replace('\n', ' ');
+            if (why.Length > 300) why = why.Substring(0, 300) + "...";
+            try { DvProto.WriteFrame(s, keys, ++replySeq, "<ERR " + why); } catch { }
             throw;
         }
         finally
@@ -718,7 +720,7 @@ public class DeskViewForwarder
     public volatile bool KeysNeedClick;
     volatile bool kbdRemote;                              // a click went into a picture since the last local click
     volatile int agentVersion;                            // what the agent told us it understands (0 = an older one)
-    DateTime lastHeard = DateTime.Now;
+    long lastHeardTicks = DateTime.Now.Ticks;             // when the agent last said anything (reader thread writes)
     int lastScreen;                                       // the picture of the last forwarded move
     readonly HashSet<int> localDown = new HashSet<int>(), remoteDown = new HashSet<int>();   // keys held, by where their press went (hook thread only)
     readonly Dictionary<int, DateTime> keySeen = new Dictionary<int, DateTime>();   // last event per key (a held key repeats)
@@ -776,11 +778,14 @@ public class DeskViewForwarder
     /// <summary>Ask the agent to stream another monitor (takes effect on the next connection too).</summary>
     public void SelectMonitor(string name) { Monitor = name; Enqueue("S " + name); }
 
-    void Enqueue(string s)
+    void Enqueue(string s) { Enqueue(s, false); }
+
+    void Enqueue(string s, bool force)
     {
         if (!Connected) return;
-        // a stalled link: drop pointer moves (newer ones follow), never presses, releases or keys
-        if (queue.Count > 2000 && (s.StartsWith("M ") || s.StartsWith("R ") || s.StartsWith("MS "))) return;
+        // a stalled link: drop pointer moves (newer ones follow), never presses, releases or keys - nor the move that
+        // places a press (force)
+        if (!force && queue.Count > 2000 && (s.StartsWith("M ") || s.StartsWith("R ") || s.StartsWith("MS "))) return;
         queue.Add(s);
     }
 
@@ -829,8 +834,13 @@ public class DeskViewForwarder
                 if (fwd) clipToSend = true;                     // the keyboard goes over: our clipboard goes along
                 else
                 {
-                    for (int b = 0; b < 5; b++) forwardedDown[b] = false;
-                    if (agentVersion >= 2) { Enqueue("U"); Enqueue("CQ"); }   // nothing stays held there; its clipboard comes back
+                    if (!Forwarding && !RemoteOwned)
+                    {
+                        // input stopped going over altogether: nothing stays held there
+                        for (int b = 0; b < 5; b++) forwardedDown[b] = false;
+                        if (agentVersion >= 2) Enqueue("U");
+                    }
+                    if (agentVersion >= 2) Enqueue("CQ");             // its clipboard comes back with the keyboard
                 }
             }
             // Re-register now and then so our hooks run before the engine's (it re-hooks when its core restarts)
@@ -864,7 +874,7 @@ public class DeskViewForwarder
                 Connected = true; Status = "connected to " + Peer + " (encrypted)";
                 if (!string.IsNullOrEmpty(Name)) DvProto.WriteFrame(s, keys, ++seq, "N " + Name.Replace(' ', '_'));   // who we are
                 if (!string.IsNullOrEmpty(Monitor)) DvProto.WriteFrame(s, keys, ++seq, "S " + Monitor);
-                agentVersion = 0; lastHeard = DateTime.Now; lastScreen = 0;
+                agentVersion = 0; Interlocked.Exchange(ref lastHeardTicks, DateTime.Now.Ticks); lastScreen = 0;
                 // The agent's messages (pointer handed back, its clipboard) on their own thread: no added delay.
                 readerDead = false;
                 var reader = new Thread(() =>
@@ -876,18 +886,25 @@ public class DeskViewForwarder
                 }) { IsBackground = true, Name = "DeskViewForwarderRead" };
                 c.ReceiveTimeout = 0;                              // the agent may stay quiet for a long time
                 reader.Start();
-                DateTime lastPing = DateTime.Now;
+                DateTime lastPing = DateTime.Now, pingSentAt = DateTime.MaxValue;   // pingSentAt: oldest ping not answered yet
                 while (!stopping)
                 {
                     // A closed link is noticed within 100 ms, so input goes back to this machine instead of into it.
                     if (readerDead) throw new IOException("the other machine closed the link");
                     string msg;
                     if (queue.TryTake(out msg, 100)) { DvProto.WriteFrame(s, keys, ++seq, msg); while (queue.TryTake(out msg)) DvProto.WriteFrame(s, keys, ++seq, msg); }
-                    // Every second while input goes over (5 s otherwise); an agent that answers pings and stays silent
-                    // for 4 s is gone (asleep, out of Wi-Fi): input comes back here instead of into nothing.
+                    // Every second while input goes over (5 s otherwise). An agent that leaves a ping unanswered for 4 s
+                    // is gone (asleep, out of Wi-Fi): input comes back here instead of into nothing. Timed from the ping
+                    // (after it was written), so a quiet idle link or a long clipboard write never counts against it.
                     double every = Forwarding || RemoteOwned ? 1 : 5;
-                    if ((DateTime.Now - lastPing).TotalSeconds > every) { DvProto.WriteFrame(s, keys, ++seq, "P"); lastPing = DateTime.Now; }
-                    if (agentVersion >= 2 && (DateTime.Now - lastHeard).TotalSeconds > every + 3) throw new IOException("the other machine stopped answering");
+                    var heard = new DateTime(Interlocked.Read(ref lastHeardTicks));
+                    if (pingSentAt != DateTime.MaxValue && heard >= pingSentAt) pingSentAt = DateTime.MaxValue;
+                    if ((DateTime.Now - lastPing).TotalSeconds > every)
+                    {
+                        DvProto.WriteFrame(s, keys, ++seq, "P"); lastPing = DateTime.Now;
+                        if (pingSentAt == DateTime.MaxValue) pingSentAt = lastPing;
+                    }
+                    if (agentVersion >= 2 && pingSentAt != DateTime.MaxValue && (DateTime.Now - pingSentAt).TotalSeconds > 4) throw new IOException("the other machine stopped answering");
                 }
             }
             catch (Exception e) { Status = "not connected (" + e.Message + ")"; }
@@ -906,7 +923,14 @@ public class DeskViewForwarder
     Picture PictureAt(int x, int y)
     {
         var all = Pictures;
-        if (all != null) { foreach (var pic in all) if (pic.Hit.Contains(x, y)) return pic; return null; }
+        if (all != null)
+        {
+            // an older agent changes screens only on its own 250 ms timer: input to several pictures would land on the
+            // wrong one, so with it only the first picture takes input (as before)
+            bool one = agentVersion < 2 && all.Length > 1;
+            foreach (var pic in all) if (pic.Hit.Contains(x, y) && (!one || pic.Screen == all[0].Screen)) return pic;
+            return null;
+        }
         if (x >= VidL && x < VidL + VidW && y >= VidT && y < VidT + VidH)
         {
             var r = new System.Drawing.Rectangle(VidL, VidT, VidW, VidH);
@@ -953,7 +977,7 @@ public class DeskViewForwarder
                     bool inPic = pic != null;
                     if (msg == 0x0200)                                   // move: forward, let the local cursor move
                     {
-                        if (inPic) ForwardMove(pic, x, y);
+                        if (inPic) ForwardMove(pic, x, y, false);
                     }
                     else if (msg == 0x020A || msg == 0x020E)             // wheel: only over the picture
                     {
@@ -969,7 +993,7 @@ public class DeskViewForwarder
                             // a press outside stays local together with its release. No stuck buttons either way.
                             if (down && inPic)
                             {
-                                ForwardMove(pic, x, y);                  // on the right screen, at the right spot
+                                ForwardMove(pic, x, y, true);            // on the right screen, at the right spot
                                 kbdRemote = true;                        // the keyboard follows the click
                                 forwardedDown[b] = true; Enqueue("B " + b + " 1"); return (IntPtr)1;
                             }
@@ -986,17 +1010,17 @@ public class DeskViewForwarder
 
     /// <summary>A move over a picture: its spot on that picture's screen. Several pictures (one per monitor) each
     /// carry their screen; an older agent only knows one screen at a time, so it is switched first.</summary>
-    void ForwardMove(Picture pic, int x, int y)
+    void ForwardMove(Picture pic, int x, int y, bool force)
     {
         var f = pic.Full;
         int nx = (int)Math.Round((x - f.X) * 65535.0 / Math.Max(1, f.Width - 1));
         int ny = (int)Math.Round((y - f.Y) * 65535.0 / Math.Max(1, f.Height - 1));
         nx = Math.Max(0, Math.Min(65535, nx)); ny = Math.Max(0, Math.Min(65535, ny));
-        if (nx == lastNx && ny == lastNy && pic.Screen == lastScreen) return;
+        if (!force && nx == lastNx && ny == lastNy && pic.Screen == lastScreen) return;
         lastNx = nx; lastNy = ny;
-        if (pic.Screen > 0 && agentVersion >= 2) { lastScreen = pic.Screen; Enqueue("MS " + pic.Screen + " " + nx + " " + ny); return; }
-        if (pic.Screen > 0 && pic.Screen != lastScreen) { lastScreen = pic.Screen; Monitor = pic.Screen.ToString(); Enqueue("S " + Monitor); }
-        Enqueue("M " + nx + " " + ny);
+        if (pic.Screen > 0 && agentVersion >= 2) { lastScreen = pic.Screen; Enqueue("MS " + pic.Screen + " " + nx + " " + ny, force); return; }
+        if (pic.Screen > 0 && pic.Screen != lastScreen) { lastScreen = pic.Screen; Monitor = pic.Screen.ToString(); Enqueue("S " + Monitor, true); }
+        Enqueue("M " + nx + " " + ny, force);
     }
 
     /// <summary>The pointer touches the switching edge: hand pointer and keyboard to the other machine.
@@ -1084,7 +1108,7 @@ public class DeskViewForwarder
     {
         if (!msg.StartsWith("<")) throw new InvalidDataException("not from the agent");
         var p = msg.Substring(1).Split(' ');
-        lastHeard = DateTime.Now;
+        Interlocked.Exchange(ref lastHeardTicks, DateTime.Now.Ticks);
         switch (p[0])
         {
             case "V": int v; if (p.Length > 1 && int.TryParse(p[1], out v)) agentVersion = v; break;
@@ -1344,8 +1368,25 @@ public static class DeskViewFiles
                 // same spelling as the enumerated paths (GetFullPath would expand 8.3 short names and shift the cut);
                 // a whole drive ("D:\\") has no parent: its folders are sent under their own names
                 var root = Path.GetDirectoryName(p.TrimEnd('\\')) ?? p.TrimEnd('\\');
-                foreach (var f in Directory.EnumerateFiles(p, "*", SearchOption.AllDirectories))
-                    items.Add(new KeyValuePair<string, string>(f, f.Substring(root.Length).TrimStart('\\').Replace('\\', '/')));
+                // walked by hand: one unreadable folder (every drive has "System Volume Information") must not stop it
+                var dirs = new Stack<string>(); dirs.Push(p);
+                while (dirs.Count > 0)
+                {
+                    var d = dirs.Pop(); string[] fs = new string[0], ds = new string[0];
+                    try { fs = Directory.GetFiles(d); ds = Directory.GetDirectories(d); } catch (UnauthorizedAccessException) { } catch (IOException) { }
+                    foreach (var f in fs) items.Add(new KeyValuePair<string, string>(f, f.Substring(root.Length).TrimStart('\\').Replace('\\', '/')));
+                    foreach (var sd in ds)
+                    {
+                        try
+                        {
+                            // hidden system folders at a drive's root ($RECYCLE.BIN, System Volume Information) are not the user's
+                            var hs = FileAttributes.Hidden | FileAttributes.System;
+                            if (d.TrimEnd('\\').Length <= 2 && (File.GetAttributes(sd) & hs) == hs) continue;
+                        }
+                        catch { continue; }
+                        dirs.Push(sd);
+                    }
+                }
             }
         }
         if (items.Count == 0) return "nothing to send";
@@ -1390,14 +1431,14 @@ public static class DeskViewFiles
             catch (IOException e)
             {
                 // the other side hung up: it may have said why
-                try { c.ReceiveTimeout = 2000; var why = DvProto.ReadFrame(s, keys, ref rseq); if (why.StartsWith("<ERR ")) return "the other computer could not save it: " + why.Substring(5); } catch { }
+                try { c.ReceiveTimeout = 2000; var why = DvProto.ReadFrame(s, keys, ref rseq, DvProto.MaxFileFrame); if (why.StartsWith("<ERR ")) return "the other computer could not save it: " + why.Substring(5); } catch { }
                 return "the transfer was interrupted (" + e.Message + ")";
             }
             // wait for the other side to confirm that everything is saved (an older DeskView just closes the link)
             c.ReceiveTimeout = 15000;
             try
             {
-                var answer = DvProto.ReadFrame(s, keys, ref rseq);
+                var answer = DvProto.ReadFrame(s, keys, ref rseq, DvProto.MaxFileFrame);
                 if (answer.StartsWith("<ERR ")) return "the other computer could not save it: " + answer.Substring(5);
                 return null;
             }
@@ -1407,6 +1448,7 @@ public static class DeskViewFiles
                     return "sent, but the other computer did not confirm it";
                 return null;   // closed after the last file: an older DeskView, which has no confirmation
             }
+            catch (InvalidDataException) { return "sent, but the other computer did not confirm it"; }
         }
     }
 }

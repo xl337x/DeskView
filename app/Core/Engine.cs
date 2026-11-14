@@ -584,7 +584,7 @@ namespace DeskView
                     zones[pl.Key] = z;
                 }
                 z.Place(Media.PictureRect(pl));
-                z.TopMost = false; z.TopMost = true;   // stay above the video window, which also puts itself on top
+                DeskViewPortal.MakePassive(z.Handle);   // above the picture, without taking focus
             }
         }
 
@@ -673,6 +673,7 @@ namespace DeskView
                     foreach (var pl in Media.Players.Values) if (pl.Host != null) pl.Host.Raise();
                     UpdateDropZones();
                     if (strips.Count > 0) UpdateStrips();
+                    if (toast != null && toast.Visible) DeskViewPortal.MakePassive(toast.Handle);
                     if (S.Role == Role.Server) UpdatePortals(); else UpdateForwarderPicture();
                     var before = S.Peer; Peer();
                     if (S.Role == Role.Client && S.Peer != before) forwarder.Peer = S.Peer;

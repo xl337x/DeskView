@@ -124,7 +124,7 @@ try {
     $sw = $agent.Switches
     Check 'touching the right edge switches to the other machine' ($fw.TryEnter(1919, 300) -and $fw.RemoteOwned)
     Check 'the other machine gets the pointer at the matching height' (WaitFor { $agent.Switches -gt $sw -and $io.X -eq 1 }) "$($io.X),$($io.Y)"
-    $enq = [DeskViewForwarder].GetMethod('Enqueue', [Reflection.BindingFlags]'NonPublic,Instance')
+    $enq = [DeskViewForwarder].GetMethod('Enqueue', [Reflection.BindingFlags]'NonPublic,Instance', $null, [Type[]]@([string]), $null)
     # moves queued before the switch were measured from the old position: dropped, not a jump across the screen
     $mon = [Windows.Forms.Screen]::FromPoint((New-Object Drawing.Point 1919, 300)).Bounds
     $px = $mon.Left + [int]($mon.Width / 2); $py = $mon.Top + [int]($mon.Height / 2)
@@ -147,10 +147,10 @@ try {
     $fw.Pictures = [DeskViewForwarder+Picture[]]@($picA, $picB)
     $at = [DeskViewForwarder].GetMethod('PictureAt', $bf); $fm = [DeskViewForwarder].GetMethod('ForwardMove', $bf)
     Check 'the picture under the pointer is found; the guide strip at the top is not part of it' ($at.Invoke($fw, @(500, 200)) -eq $picA -and $at.Invoke($fw, @(1500, 200)) -eq $picB -and $at.Invoke($fw, @(500, 10)) -eq $null -and $at.Invoke($fw, @(2500, 200)) -eq $null)
-    [void]$fm.Invoke($fw, @($picB.PSObject.BaseObject, 1000, 0)); [void](WaitFor { $io.X -eq $shared[$picB.Screen - 1].Bounds.Left })
+    [void]$fm.Invoke($fw, @($picB.PSObject.BaseObject, 1000, 0, $false)); [void](WaitFor { $io.X -eq $shared[$picB.Screen - 1].Bounds.Left })
     $bB = $shared[$picB.Screen - 1].Bounds
     Check "a move over the second picture lands on its screen ($($picB.Screen)) of the other computer" ($io.X -eq $bB.Left -and $io.Y -eq $bB.Top) "$($io.X),$($io.Y) want $($bB.Left),$($bB.Top)"
-    [void]$fm.Invoke($fw, @($picA.PSObject.BaseObject, 999, 499)); $bA = $shared[0].Bounds; [void](WaitFor { $io.X -eq $bA.Right - 1 })
+    [void]$fm.Invoke($fw, @($picA.PSObject.BaseObject, 999, 499, $false)); $bA = $shared[0].Bounds; [void](WaitFor { $io.X -eq $bA.Right - 1 })
     Check 'and over the first picture on its screen (1), far corner to far corner' ($io.X -eq $bA.Right - 1 -and $io.Y -eq $bA.Bottom - 1) "$($io.X),$($io.Y) want $($bA.Right - 1),$($bA.Bottom - 1)"
     # the keyboard follows clicks when the pictures share the desk with this computer's own monitors
     $kf = [DeskViewForwarder].GetProperty('KeysForwarded', $bf); $kr = [DeskViewForwarder].GetField('kbdRemote', $bf)

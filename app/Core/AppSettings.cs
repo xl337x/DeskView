@@ -156,7 +156,13 @@ namespace DeskView
                 if (!File.Exists(path)) continue;
                 try
                 {
-                    var text = File.ReadAllText(path);
+                    string text = null;
+                    for (int i = 0; ; i++)   // a virus scanner or backup tool may hold it for a moment: that is not corruption
+                    {
+                        try { text = File.ReadAllText(path); break; }
+                        catch (IOException) { if (i >= 4) throw; System.Threading.Thread.Sleep(100); }
+                        catch (UnauthorizedAccessException) { if (i >= 4) throw; System.Threading.Thread.Sleep(100); }
+                    }
                     var s = new JavaScriptSerializer().Deserialize<AppSettings>(text);
                     if (s == null) throw new FormatException("empty");
                     s.Screens = s.Screens ?? new Dictionary<string, int>();
@@ -164,12 +170,17 @@ namespace DeskView
                     // Settings from before the engine choice existed: that computer was set up with the classic
                     // engine, and the other computer still uses it - keep it (switching both is the user's call).
                     if (!text.Contains("\"InputEngine\"")) s.InputEngine = "Classic";
-                    if (path != FilePath) Log.Write("settings were unreadable - restored the previous copy");
+                    if (path != FilePath)
+                    {
+                        Log.Write("settings were unreadable - restored the previous copy");
+                        try { File.Copy(path, FilePath, true); } catch { }   // the good copy is the live one again
+                    }
                     return s;
                 }
                 catch (Exception e)
                 {
-                    try { File.Copy(path, path + ".corrupt-" + DateTime.Now.ToString("yyyyMMddHHmmss"), true); } catch { }
+                    if (!(e is IOException) && !(e is UnauthorizedAccessException))
+                        try { File.Copy(path, path + ".corrupt-" + DateTime.Now.ToString("yyyyMMddHHmmss"), true); } catch { }
                     Log.Write("settings file " + Path.GetFileName(path) + " unreadable (" + e.Message + "), kept a copy");
                 }
             }

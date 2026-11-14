@@ -76,7 +76,7 @@ namespace DeskView
     public class Player
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
-        public Size? RemoteRes; public string RemoteRect; public bool Passive; public DeskViewPictureHost Host; public int AdoptFails; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
+        public Size? RemoteRes; public string RemoteRect; public bool Passive, WasLive; public DeskViewPictureHost Host; public int AdoptFails; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
         public DateTime LastStart = DateTime.MinValue, ShownAt = DateTime.MinValue;
         public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
@@ -219,6 +219,7 @@ namespace DeskView
         /// <summary>A picture of the other computer's screen n stopped (closed, or its player died): the other computer
         /// should restart that screen's listener.</summary>
         public event Action<int> ViewerGone;
+        int reportSeq;
         /// <summary>Where the other computer's screen n is and how big (it tells us over the link), or null.</summary>
         public Func<int, Rectangle?> RemoteScreen;
         void OnViewerGone(Player pl) { if (!pl.EverLive) return; var h = ViewerGone; if (h != null) h(pl.RemoteN); }
@@ -229,6 +230,7 @@ namespace DeskView
         {
             // the player first, then the window holding its picture (never destroy a window that still has its child)
             if (p.P != null) { Kill(p.P); try { p.P.WaitForExit(500); } catch { } OnViewerGone(p); }
+            try { File.Delete(p.Report); } catch { }
             p.P = null;
             if (p.Host != null) { p.Host.Release(); p.Host.Close(); p.Host = null; }
         }
@@ -255,7 +257,8 @@ namespace DeskView
             foreach (var x in w)
                 if (!Players.ContainsKey(x.Item1))
                 {
-                    var pl = new Player { Key = x.Item1, Screen = x.Item2, RemoteN = x.Item3, Report = Path.Combine(Path.GetTempPath(), "deskview-ffplay-" + Regex.Replace(x.Item1, @"[^\w]", "") + ".log") };
+                    // its own report file: a picture moved to another monitor keeps its file, which must never be shared
+                    var pl = new Player { Key = x.Item1, Screen = x.Item2, RemoteN = x.Item3, Report = Path.Combine(Path.GetTempPath(), "deskview-ffplay-" + Regex.Replace(x.Item1, @"[^\w]", "") + "-" + (++reportSeq) + ".log") };
                     Players[x.Item1] = pl; StartPlayer(pl, peer);
                 }
         }
@@ -284,12 +287,16 @@ namespace DeskView
                 { "FFREPORT", "file=" + pl.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" },
             };
             // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
-            string probe = pl.Legacy || (pl.Fails >= 2 && !pl.EverLive) ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
+            bool bigProbe = pl.Legacy || (pl.Fails >= 2 && !pl.EverLive);
+            string probe = bigProbe ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
+            // nobuffer only with the long probe: there the probed second or more would stay as lasting lag (the next
+            // key frame is at most 0.5-1 s away); with the short probe it would only throw away the first key frame
+            string flags = bigProbe ? "-fflags nobuffer+discardcorrupt " : "-fflags discardcorrupt ";
             // Not "-fflags nobuffer": it drops the packets read while finding the picture size - the first key frame -
             // so the picture only appeared at the next one (measured: 3.3 s -> 1.0 s to the first picture).
             // No "-hwaccel d3d11va": this player's renderer can't use it (decoding stayed on the CPU anyway) and it
             // made the picture start later. -nostats: the report holds only what is read from it.
-            pl.P = Start(ffplay, "-hide_banner -loglevel error -nostats -autoexit -fflags discardcorrupt -flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
+            pl.P = Start(ffplay, "-hide_banner -loglevel error -nostats -autoexit " + flags + "-flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
             pl.LastStart = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
         }
 
@@ -300,9 +307,9 @@ namespace DeskView
             bool changed = false;
             foreach (var pl in Players.Values)
             {
-                bool wasLive = pl.Live;
                 if (ServicePlayer(pl, peer)) changed = true;
-                if (pl.Live != wasLive) changed = true;
+                bool now = pl.Live;   // compared with the last tick: a player can also die between ticks
+                if (now != pl.WasLive) { pl.WasLive = now; changed = true; }
             }
             return changed;
         }
