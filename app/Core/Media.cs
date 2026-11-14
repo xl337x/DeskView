@@ -70,7 +70,7 @@ namespace DeskView
     public class Player
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
-        public Size? RemoteRes; public string RemoteRect; public bool Passive; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
+        public Size? RemoteRes; public string RemoteRect; public bool Passive; public IntPtr Window; public int Fails; public bool Legacy; public bool EverLive; public bool Announced, WarnedDown;
         public DateTime LastStart = DateTime.MinValue; public long ReportLen = -1; public DateTime ReportGrew = DateTime.Now;
         public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
@@ -231,7 +231,7 @@ namespace DeskView
             // an old sender starts slowly (rare key frames): give it time to show its picture size, or nothing appears
             string probe = pl.Legacy || pl.Fails >= 2 ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
             pl.P = Start(ffplay, "-hide_banner -loglevel error " + hw + "-fflags nobuffer+discardcorrupt -flags low_delay -framedrop -sync ext " + probe + " -an -noborder -alwaysontop " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
-            pl.LastStart = DateTime.Now; pl.ReportLen = -1; pl.ReportGrew = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
+            pl.LastStart = DateTime.Now; pl.ReportLen = -1; pl.ReportGrew = DateTime.Now; pl.Passive = false; pl.Window = IntPtr.Zero; pl.RemoteRes = null;
         }
 
         /// <summary>Keep players alive; returns true if what is shown changed (resolution / which screen).</summary>
@@ -254,9 +254,15 @@ namespace DeskView
                 }
                 if (!pl.Passive)
                 {
-                    pl.P.Refresh();
-                    // out of Alt+Tab, never takes focus (a stray Esc would close it), really on top
-                    if (pl.P.MainWindowHandle != IntPtr.Zero) { DeskViewPortal.MakePassive(pl.P.MainWindowHandle); pl.Passive = true; changed = true; }
+                    // out of Alt+Tab, never takes focus (a stray Esc would close it), really on top. The picture window is
+                    // found by its title: ffplay's "main window" can be a hidden helper, and making that one topmost
+                    // left the picture behind other windows.
+                    var w = DeskViewPortal.FindVisibleWindow(pl.P.Id, "DeskView");
+                    if (w != IntPtr.Zero) { DeskViewPortal.MakePassive(w); pl.Window = w; pl.Passive = true; changed = true; }
+                }
+                else if (pl.Window != IntPtr.Zero && !DeskViewPortal.IsTopmost(pl.Window))
+                {
+                    DeskViewPortal.MakePassive(pl.Window);   // something took "on top" away: put the picture back in front
                 }
                 long len = File.Exists(pl.Report) ? new FileInfo(pl.Report).Length : 0;
                 if (len != pl.ReportLen) { pl.ReportLen = len; pl.ReportGrew = DateTime.Now; }

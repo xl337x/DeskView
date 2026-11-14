@@ -105,6 +105,31 @@ public class DeskViewPortal
     public static void UsePhysicalPixels() { SetThreadDpiAwarenessContext(PerMonitorV2); }
 
     /// <summary>Stop a window taking focus or appearing in Alt+Tab / the taskbar.</summary>
+    delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+
+    /// <summary>The visible window of process pid with this title (ffplay's picture; its "main window" can be a
+    /// hidden helper window, which is why Process.MainWindowHandle is not used). Zero if there is none yet.</summary>
+    public static IntPtr FindVisibleWindow(int pid, string title)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, l) =>
+        {
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p != (uint)pid || !IsWindowVisible(h)) return true;
+            var s = new StringBuilder(64); GetWindowText(h, s, 64);
+            if (s.ToString() == title) { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    /// <summary>True if the window is marked always-on-top.</summary>
+    public static bool IsTopmost(IntPtr hwnd) { return (GetWindowLong(hwnd, -20) & 0x8) != 0; }
+
     public static void MakePassive(IntPtr hwnd)
     {
         const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000, WS_EX_APPWINDOW = 0x40000;
