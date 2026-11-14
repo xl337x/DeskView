@@ -56,33 +56,61 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
 # computer can show each on one of its monitors and windows can be dragged between them.
 function Set-VirtualScreens([int]$count) {
     $cfgDir = 'C:\VirtualDisplayDriver'; $cfg = Join-Path $cfgDir 'vdd_settings.xml'
-    $device = { Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { $_.FriendlyName -match 'Virtual Display' -or $_.HardwareID -match 'MttVDD' } }
+    $device = { Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ? { $_.FriendlyName -match 'Virtual Display' -or ($_.HardwareID -join ' ') -match 'MttVDD' } }
     if ($count -eq 0) {
         $dev = & $device
         if ($dev) { $dev | Disable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue }
         Write-Host 'Virtual screens off.'; return $true
     }
+    # The winget package only unpacks the driver: find it, trust its signer (Windows can't ask in a background
+    # install), put it in the driver store and create the device.
     if (-not (& $device)) {
         Write-Host "Installing the virtual display driver ($count screen$(if ($count -gt 1) { 's' }))..."
-        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Write-Host 'winget is needed for the virtual display driver.'; return $false }
-        winget install --id VirtualDrivers.Virtual-Display-Driver -e --source winget --accept-source-agreements --accept-package-agreements --silent | Out-Host
+        $pkg = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Directory -Filter 'VirtualDrivers.Virtual-Display-Driver*' -ErrorAction SilentlyContinue | Select -First 1
+        if (-not $pkg) {
+            if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Write-Host 'winget is needed for the virtual display driver.'; return $false }
+            winget install --id VirtualDrivers.Virtual-Display-Driver -e --source winget --accept-source-agreements --accept-package-agreements --silent --disable-interactivity | Out-Host
+            $pkg = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Directory -Filter 'VirtualDrivers.Virtual-Display-Driver*' -ErrorAction SilentlyContinue | Select -First 1
+        }
+        if (-not $pkg) { Write-Host 'The virtual display driver package was not found.'; return $false }
+        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM64' } else { 'x86' }   # the package's x64 build sits in "x86"
+        $drv = Join-Path $pkg.FullName "SignedDrivers\$arch\VDD"; $inf = Join-Path $drv 'MttVDD.inf'
+        $sig = Get-AuthenticodeSignature (Join-Path $drv 'mttvdd.cat')
+        if ($sig.Status -ne 'Valid') { Write-Host "The virtual display driver's signature is not valid ($($sig.Status)) - not installed."; return $false }
+        $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine')
+        $store.Open('ReadWrite'); $store.Add($sig.SignerCertificate); $store.Close()
+        New-Item -ItemType Directory -Force $cfgDir | Out-Null
+        if (-not (Test-Path $cfg)) { Copy-Item (Join-Path $drv 'vdd_settings.xml') $cfg }
+        pnputil /add-driver $inf /install | Out-Null
+        if (-not (& $device)) { & (Join-Path $pkg.FullName 'Dependencies\devcon.exe') install $inf 'Root\MttVDD' | Out-Null }
+        Start-Sleep 3
     }
     $dev = & $device
     if (-not $dev) { Write-Host 'The virtual display driver did not install (managed PCs often block drivers).'; return $false }
-    # The driver reads how many screens to make from its settings file: write it if it is missing.
+    # How many screens, and render them on the first graphics adapter: that is the one screen capture and the
+    # GPU encoder use, so the frames never leave the graphics chip (a second GPU would need copies).
     New-Item -ItemType Directory -Force $cfgDir | Out-Null
-    if (Test-Path $cfg) { [xml]$x = Get-Content $cfg } else { [xml]$x = '<vdd_settings><monitors><count>1</count></monitors></vdd_settings>' }
-    if (-not $x.vdd_settings.monitors) { $m = $x.CreateElement('monitors'); [void]$x.vdd_settings.AppendChild($m) }
-    if ($x.vdd_settings.monitors.count -eq $null) { $c = $x.CreateElement('count'); [void]$x.vdd_settings.monitors.AppendChild($c) }
+    if (Test-Path $cfg) { [xml]$x = Get-Content $cfg } else { [xml]$x = '<vdd_settings><monitors><count>1</count></monitors><gpu><friendlyname>default</friendlyname></gpu></vdd_settings>' }
     $x.vdd_settings.monitors.count = [string]$count
+    try { Add-Type -Path (Join-Path $PSScriptRoot 'DeskView-Dxgi.cs') -ErrorAction Stop; $gpu = [DeskViewDxgi]::FirstAdapterName() } catch { $gpu = $null }
+    if ($gpu -and $x.vdd_settings.gpu) { $x.vdd_settings.gpu.friendlyname = $gpu }
     $x.Save($cfg)
-    # Reload the driver so it creates the new number of screens.
+    # Reload the driver so it creates the screens.
     $dev | Disable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 2
-    $dev | Enable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Host "Virtual screens: $count. Arrange them in Settings > System > Display (e.g. to the right of this screen)."
+    $dev | Enable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 4
+    Write-Host "Virtual screens: $count (on $(if ($gpu) { $gpu } else { 'the default adapter' }))."
     $true
 }
 
+# Not elevated, as the signed-in user: switch the desktop onto the virtual screens and put them, 1920x1080 each, in a
+# row to the right of this computer's own screens.
+function Arrange-VirtualScreens {
+    try {
+        Add-Type -Path (Join-Path $PSScriptRoot 'DeskView-Displays.cs') -ErrorAction Stop
+        if ([DeskViewDisplays]::VirtualScreens().Count -eq 0) { & "$env:WINDIR\System32\DisplaySwitch.exe" /extend; Start-Sleep 6 }
+        [DeskViewDisplays]::Arrange(1920, 1080) | % { Write-Host "        $_" }
+    } catch { Write-Warning "Arranging the virtual screens failed: $($_.Exception.Message) - use Settings > System > Display." }
+}
 # ---- elevated parts ------------------------------------------------------------------------------------
 if ($RemoveRules) { Get-NetFirewallRule -DisplayName 'DeskView *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; exit 0 }
 if ($Elevated) {
@@ -106,6 +134,7 @@ if ($Elevated) {
 function Run-Elevated([string]$arguments) {
     $self = Join-Path $env:TEMP 'DeskView-Setup-elevated.ps1'
     Copy-Item $PSCommandPath $self -Force
+    Copy-Item (Join-Path $PSScriptRoot 'DeskView-Dxgi.cs') (Join-Path $env:TEMP 'DeskView-Dxgi.cs') -Force -ErrorAction SilentlyContinue   # used by the elevated part
     try { $p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$self`" $arguments" }
     catch { Write-Warning 'Administrator approval was declined.'; return $false }
     $p.ExitCode -eq 0
@@ -148,6 +177,7 @@ elseif ($needAdmin) {
     Write-Host 'Step 1/4: administrator approval for the firewall rules (a Windows prompt will appear)...'
     $elevArgs = "-Elevated -VirtualScreens $VirtualScreens" + $(if ($ClassicEngine) { ' -ClassicEngine' })
     if (-not (Run-Elevated $elevArgs)) { Write-Warning 'The administrator part did not fully succeed (see above).' }
+    if ($VirtualScreens -gt 0) { Arrange-VirtualScreens }
 } else { Write-Host 'Step 1/4: firewall rules already in place.' }
 
 # 2. Copy the app (the whole folder, so every file is from the same version; FFmpeg and old files handled below).
