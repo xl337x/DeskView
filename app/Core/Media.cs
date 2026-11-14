@@ -137,7 +137,7 @@ namespace DeskView
             int mbps = BitrateMbps[prof]; string b = mbps + "M", buf = (mbps * 500) + "k";
             // A viewer that joins (a monitor switched to this screen, smart screens, a reconnect) shows nothing until the
             // next key frame: one every 0.5 s on a wired network (1 s on Wi-Fi) instead of 2 s, at a small bitrate cost.
-            string gop = prof == "WiFi" ? "60" : "30";
+            string gop = "30";
             string encArgs;
             switch (enc)
             {
@@ -276,7 +276,10 @@ namespace DeskView
             pl.Legacy = !pl.EverLive && pl.Fails >= 2 && pl.Fails % 2 == 1;
             string enc = pl.Legacy ? "" : "&passphrase=" + S.VideoKey() + "&pbkeylen=32";
             string url = "srt://" + Tools.Host(peer) + ":" + port + "?mode=caller&latency=" + (LatencyMs[prof] * 1000) + "&transtype=live&connect_timeout=3000" + enc;
-            string vf = S.Picture == "Stretch" ? "-vf scale=" + r.Width + ":" + r.Height + " " : "";
+            // Frames 1 ms apart: the player is always "behind", shows the newest frame and drops older ones, so any lag
+            // (start-up, a network or CPU hiccup) drains by itself. Measured on SERVER (loopback, key-to-picture):
+            // ~400 ms before, 150-190 ms with this; after a 1.5 s stall back to normal within ~2 s.
+            string vf = "-vf setpts=N*0.001/TB" + (S.Picture == "Stretch" ? ",scale=" + r.Width + ":" + r.Height : "") + " ";
             // a stream that stops sending (the other computer asleep, network gone) ends the player after 4 s instead of
             // leaving a frozen picture (3 s): the restart below takes over
             url += "&timeout=3000000";
@@ -291,7 +294,9 @@ namespace DeskView
             string probe = bigProbe ? "-probesize 2000000 -analyzeduration 3000000" : "-probesize 32768 -analyzeduration 0";
             // nobuffer only with the long probe: there the probed second or more would stay as lasting lag (the next
             // key frame is at most 0.5-1 s away); with the short probe it would only throw away the first key frame
-            string flags = bigProbe ? "-fflags nobuffer+discardcorrupt " : "-fflags discardcorrupt ";
+            // Always nobuffer: probed packets would otherwise become a lasting lag (the player schedules frames from
+            // the first one and never catches up). The first picture then waits for the next key frame (<= 0.5 s).
+            string flags = "-fflags nobuffer+discardcorrupt ";
             // Not "-fflags nobuffer": it drops the packets read while finding the picture size - the first key frame -
             // so the picture only appeared at the next one (measured: 3.3 s -> 1.0 s to the first picture).
             // No "-hwaccel d3d11va": this player's renderer can't use it (decoding stayed on the CPU anyway) and it
