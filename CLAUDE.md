@@ -14,6 +14,8 @@ Start here, then read in this order:
    rejected and why (the "criticism" record - check it before re-proposing something).
 6. `docs/HISTORY.md`     - what the owner asked for over time, what was delivered, machine state at the end.
 7. `tests/live/README.md` - the scripts that drive live QA on the two real PCs.
+8. `docs/COUNCIL.md`    - the critic council's plan: chosen technology per layer, releases R1-R4 with numbers to hit, the
+   owner's answers. Work follows its roadmap.
 
 ## Resuming work in a new session (checklist)
 1. Read the docs above; `git log --oneline -20` for the latest changes.
