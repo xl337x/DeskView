@@ -3,7 +3,7 @@
 All on the owner's two PCs (a desktop server with 3 monitors on a wired network; a laptop on Wi-Fi with 3 extra screens).
 
 ## Automated suites (last full run)
-csharp5 2/2 · app 41/41 · link 46/46 · files 12/12 (10 runs in a row) · setup 10/10 · mapping 20/20 · gui 38-40 ·
+csharp5 2/2 · app 45/45 · link 46/46 · files 12/12 (10 runs in a row) · setup 10/10 · mapping 20/20 · gui 38-40 ·
 gui-deep 108-112 (gui counts vary by machine: a few checks depend on whether the classic engine is installed/running)
 · a cold-start agent (fresh clone, no prior knowledge) reproduced these and confirmed the docs against the code
 (every control, with proof; report `%TEMP%\deskview-deep-qa\report.html`) · input 22/22 (on the laptop, real hooks).
@@ -42,3 +42,10 @@ gui-deep 108-112 (gui counts vary by machine: a few checks depend on whether the
 - Injected test keys: navigation keys need the extended flag (keybd_event flag 1), or Windows adds fake Shift
   events (looked like a DeskView bug - it wasn't). WinForms multiline TextBox has no Ctrl+A.
 - Clock offset laptop vs server measured ~0.2 s (rough, over SSH) - don't compare timestamps across machines.
+
+## Video key out of the reports (2026-11-17, server)
+- `app.tests`: a real ffmpeg error that prints the SRT address -> the report holds the message, `passphrase=***`, no
+  key, no "Command line:" header. Redact covers `passphrase=KEY` and `-passphrase KEY`.
+- Encrypted SRT loopback started through `StartReported` (sender + player): sender report has "Output #0" (viewer
+  connected, read by ServedViewer), player played 9.3 s and exited 0, neither report contains the key.
+- Not yet live on the two PCs: re-run a smart-screen show/release and a player kill (restart reasons must still log).

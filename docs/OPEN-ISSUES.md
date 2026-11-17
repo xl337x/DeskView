@@ -3,6 +3,9 @@
 Ordered by importance. When fixing one, add the reason to DECISIONS.md and numbers to QA-LOG.md.
 
 ## To verify next (changed last, not yet proven live)
+0. **Reports without the video key** (app writes them, FFREPORT gone): on both PCs check a picture starts, a
+   killed player restarts, and no `%TEMP%\deskview-ff*.log` contains `passphrase=` followed by hex. Then change the
+   pairing code on both PCs (old reports held the key).
 1. **New low-latency player on the real link** (laptop <-> server over Wi-Fi). Loopback went ~400 -> ~170 ms;
    repeat `laptop-drive-view.ps1` (it measures key -> picture on the laptop). Target < 200 ms wired, < 300 ms Wi-Fi.
 2. **First picture with `nobuffer`** now waits up to one key frame (0.5 s): re-measure smart-screen start.

@@ -134,6 +134,26 @@ $oldDir = $env:DESKVIEW_APPDIR; $env:DESKVIEW_APPDIR = $fakeApp
 $found = (& $T 'DeskView.Tools')::Find('ffmpeg')
 $env:DESKVIEW_APPDIR = $oldDir; [IO.Directory]::Delete($fakeApp, $true)
 Check 'FFmpeg next to the app is used first (setup''s pinned build), not one on PATH' ($found -eq (Join-Path $fakeApp 'ffmpeg\ffmpeg.exe')) $found
+# ---------------------------------------------------------------------------------------------- no video key in reports
+# The video key is derived from the pairing code: it must never reach a file. FFREPORT wrote the whole command line
+# (the SRT address with the passphrase) into %TEMP%, and ffmpeg repeats that address in its error messages.
+$media0 = & $T 'DeskView.Media'
+$red = $media0::Redact('Connection to srt://10.0.0.1:9000?mode=caller&passphrase=a4bb3eb444dc1abd9a87a8f9ffe1af16&pbkeylen=32 failed')
+Check 'redact: the passphrase in an SRT address is removed, the rest kept' ($red -notmatch 'a4bb3eb4' -and $red -match 'passphrase=\*\*\*&pbkeylen=32') $red
+Check 'redact: "-passphrase KEY" option form too' (($media0::Redact('-passphrase a4bb3eb444dc1abd9a87 -i x')) -notmatch 'a4bb3eb4')
+$ffmpegExe = (& $T 'DeskView.Tools')::Find('ffmpeg')
+if ($ffmpegExe) {
+    $startR = $media0.GetMethod('StartReported', $bf)
+    $secret = 'deadbeefcafe0123456789abcdef4242'
+    [string]$rep = Join-Path $env:TEMP "dv-qa-report-$PID.log"
+    # a real error that prints the address: nobody listens on this port
+    $pR = $startR.Invoke($null, @([string]$ffmpegExe, "-hide_banner -loglevel info -nostats -i `"srt://127.0.0.1:9?mode=caller&connect_timeout=300&passphrase=$secret&pbkeylen=32`"", $null, $rep))
+    [void]$pR.WaitForExit(10000); Start-Sleep -Milliseconds 300
+    $txt = if (Test-Path $rep) { [IO.File]::ReadAllText($rep) } else { '' }
+    Check 'report: written by the app, holds ffmpeg''s messages' ($txt -match 'srt://127\.0\.0\.1:9') ("{0} bytes" -f $txt.Length)
+    Check 'report: no video key and no command line in it' ($txt -notmatch $secret -and $txt -notmatch 'Command line:')
+    Remove-Item $rep -ErrorAction SilentlyContinue
+}
 # ---------------------------------------------------------------------------------------------- live without report text
 # The player only writes the stream's size into its report while its status line is on (it is off: the report would
 # grow ~7 MB an hour). A picture must count as live once the player shows it, sized as the other computer told us.

@@ -94,3 +94,18 @@ the code independently and one judge verifying each claim against the code (two 
   benefit" (a critic's claim - wrong: with nobuffer the key-frame interval bounds the first picture, so -g 30 stays), GPU-path fallback by exit code (speculative), clipboard race (ms window).
 - Live QA then found three more the reviews missed: report without stream info (-nostats), smart screens grabbing
   monitors after a restart / after a disconnect, ~400-650 ms video lag. All fixed with tests where testable.
+
+## Video key never written to a file (reports written by the app, not FFREPORT)
+- FFREPORT copies the whole command line into `%TEMP%\deskview-ff*.log`, and the SRT address on it carries the
+  passphrase. The video key is an unsalted SHA256 of the short pairing code, so one leaked report allows an offline
+  search for the code - which is also the input link's key.
+- FFmpeg 9 cannot take SRT options from a file (`-/passphrase file` -> "Unrecognized option"), so the key stays on the
+  command line (other processes of the same user can read it - same trust as the settings file). What we control is
+  what gets written: ffmpeg/ffplay now run with `-loglevel info` and the app drains their error output into the
+  report itself (`Media.StartReported`), passing every line through `Media.Redact` (`passphrase=***`). Redaction is
+  needed beyond the header: ffmpeg prints the full address in its own errors ("Connection to srt://...?passphrase=...
+  failed").
+- A run that was replaced must not write into its successor's report: each report path has a run number, and late
+  lines of an old run are dropped. The file is opened per line (few lines with -nostats) so it can be read, deleted
+  and recreated at any time.
+- Owner action after updating: change the pairing code on both PCs (old reports may have been copied elsewhere).

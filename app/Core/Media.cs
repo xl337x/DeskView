@@ -131,6 +131,50 @@ namespace DeskView
             return p;
         }
 
+        // Which run of a report file may still write to it: a run that ended (killed, restarted) can deliver its last
+        // lines late, and they must not land in the report of the run that replaced it.
+        static readonly Dictionary<string, int> reportRun = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Starts ffmpeg/ffplay and writes what it reports (info level, like FFREPORT did) into "report", with
+        /// every video key removed. FFREPORT is not used: it writes the whole command line - the SRT address with the
+        /// passphrase - into the file, and ffmpeg also prints that address in its own error messages.</summary>
+        static Process StartReported(string exe, string args, Dictionary<string, string> env, string report)
+        {
+            int run;
+            lock (reportRun) { int last; reportRun.TryGetValue(report, out last); run = last + 1; reportRun[report] = run; }
+            try { File.Delete(report); } catch { }
+            var psi = new ProcessStartInfo(exe, args)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardError = true, StandardErrorEncoding = System.Text.Encoding.UTF8
+            };
+            if (env != null) foreach (var kv in env) psi.EnvironmentVariables[kv.Key] = kv.Value;
+            psi.EnvironmentVariables.Remove("FFREPORT");
+            var p = new Process { StartInfo = psi };
+            // Always read: a player whose error output is not drained would block once the pipe is full.
+            p.ErrorDataReceived += (o, e) =>
+            {
+                if (e.Data == null) return;
+                lock (reportRun)
+                {
+                    int now; if (!reportRun.TryGetValue(report, out now) || now != run) return;
+                    // Few lines (-nostats); opened per line so the file can be read, deleted and replaced at any time.
+                    try { File.AppendAllText(report, Redact(e.Data) + "\r\n"); } catch { }
+                }
+            };
+            p.Start();
+            DeskViewPortal.KillWithMe(p);
+            p.BeginErrorReadLine();
+            return p;
+        }
+
+        /// <summary>Removes video keys from a line of text (an SRT address or option): "passphrase=***".</summary>
+        public static string Redact(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return line;
+            return Regex.Replace(line, @"(passphrase[=\s:]+)[^&\s""']+", "$1***", RegexOptions.IgnoreCase);
+        }
+
         // -------------------------------------------------------------------------------------------------- senders
         public void StopSenders() { foreach (var s in Senders.Values) Kill(s.P); Senders.Clear(); }
 
@@ -172,11 +216,10 @@ namespace DeskView
             string meta = "DeskView|" + n + "|" + r.X + "," + r.Y + "," + r.Width + "," + r.Height;
             // a small report: tells afterwards whether a viewer was connected (then exiting is normal, not a failure)
             st.Report = Path.Combine(Path.GetTempPath(), "deskview-ffmpeg-screen" + n + ".log");
-            try { File.Delete(st.Report); } catch { }
-            var env = new Dictionary<string, string> { { "FFREPORT", "file=" + st.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" } };
             // -flush_packets 1: every frame leaves at once (no muxer buffering); resend_headers: stream info goes out
-            // again with key frames, so a viewer joining mid-stream can start
-            st.P = Start(ffmpeg, "-hide_banner -loglevel error -nostats " + device + "-f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", env);
+            // again with key frames, so a viewer joining mid-stream can start. -loglevel info: the report needs the
+            // "Output #0" line (a viewer connected); written by us without the key (StartReported).
+            st.P = StartReported(ffmpeg, "-hide_banner -loglevel info -nostats " + device + "-f lavfi -i " + chain + " " + pix + " " + encArgs + " -metadata service_name=" + meta + " -flush_packets 1 -f mpegts -mpegts_flags resend_headers \"" + url + "\"", null, st.Report);
             st.Started = DateTime.Now; st.Name = Tools.Short(screen);
         }
 
@@ -287,12 +330,7 @@ namespace DeskView
             // a stream that stops sending (the other computer asleep, network gone) ends the player after 3 s instead of
             // leaving a frozen picture: the restart below takes over
             url += "&timeout=3000000";
-            try { File.Delete(pl.Report); } catch { }
-            var env = new Dictionary<string, string>
-            {
-                { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" },
-                { "FFREPORT", "file=" + pl.Report.Replace('\\', '/').Replace(":", "\\:") + ":level=32" },
-            };
+            var env = new Dictionary<string, string> { { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" } };
             // Probe: 32 KB and no analysis - the picture size is known from the first key frame, and every byte probed
             // is time before the first picture. After two failed starts of a screen that never showed a picture, a
             // longer probe (a sender that starts slowly).
@@ -306,7 +344,7 @@ namespace DeskView
             // No "-hwaccel d3d11va": this player's renderer can't use it (decoding stayed on the CPU anyway) and it
             // made the picture start later. -nostats: the report holds only what is read from it.
             string flags = "-fflags nobuffer+discardcorrupt ";
-            pl.P = Start(ffplay, "-hide_banner -loglevel error -nostats -autoexit " + flags + "-flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env);
+            pl.P = StartReported(ffplay, "-hide_banner -loglevel info -nostats -autoexit " + flags + "-flags low_delay -framedrop -sync ext " + probe + " -an -noborder " + vf + "-left " + r.X + " -top " + r.Y + " -x " + r.Width + " -y " + r.Height + " -window_title DeskView \"" + url + "\"", env, pl.Report);
             pl.LastStart = DateTime.Now; pl.Passive = false; pl.RemoteRes = null;
         }
 
