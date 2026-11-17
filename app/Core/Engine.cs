@@ -289,7 +289,10 @@ namespace DeskView
             if (string.IsNullOrEmpty(want) || want.Equals("off", StringComparison.OrdinalIgnoreCase))
             {
                 if (S.Role == Role.Server) { foreach (var v in S.Screens.Values) userReleased.Add(v); S.Screens.Clear(); autoShown.Clear(); } else S.ClientView = 0;
-                Log.Write("all monitors given back"); KeepSmartMemory(); S.Save(); SyncPlayers(); OnNotice(S.Role == Role.Server ? "Other computer's screens off" : "Back to this computer", false); return;
+                Log.Write("all monitors given back"); KeepSmartMemory(); S.Save(); SyncPlayers();
+                // all back means ALL back: the windows on the laptop's extra screens come home to its own screen
+                if (S.Role == Role.Server) { if (Builtin) forwarder.AskGatherHome(); } else GatherHome();
+                SayEverywhere(S.Role == Role.Server ? "All back - the other computer's windows return to its own screen" : "All back - windows return to this screen", 2); OnNotice(S.Role == Role.Server ? "Other computer's screens off" : "Back to this computer", false); return;
             }
             int n;
             if (S.Role == Role.Server)
@@ -304,6 +307,25 @@ namespace DeskView
                 S.ClientView = n; LastOn = want; S.Save(); SyncPlayers();
                 OnNotice(string.Format("Viewing the other computer's screen {0} - Ctrl+Alt+0 to come back", n), false);
             }
+        }
+
+        /// <summary>Laptop: every window on the extra (virtual) screens moves to its own screen. On a worker thread:
+        /// moving another program's window waits for that program, and a hung one must not stop DeskView.</summary>
+        void GatherHome()
+        {
+            if (S.Role != Role.Client) return;
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    var virt = new HashSet<string>(DeskViewDisplays.VirtualScreens(), StringComparer.OrdinalIgnoreCase);
+                    var from = Screen.AllScreens.Where(x => virt.Contains(x.DeviceName)).Select(x => x.Bounds).ToArray();
+                    if (from.Length == 0) return;
+                    int n = DeskViewDisplays.BringWindowsHome(from, Screen.PrimaryScreen.WorkingArea);
+                    Log.Write("all back: " + n + " window(s) moved from the extra screens to this computer's own screen");
+                }
+                catch (Exception e) { Log.Write("all back: moving windows failed: " + e.Message); }
+            });
         }
 
         public static string ResolveMonitor(string want)
@@ -445,7 +467,19 @@ namespace DeskView
 
         // ------------------------------------------------------------------------------------------------- the guide
         readonly Dictionary<string, UI.MonitorStrip> strips = new Dictionary<string, UI.MonitorStrip>();
-        UI.Toast toast;
+        readonly List<UI.Toast> toasts = new List<UI.Toast>();
+
+        /// <summary>The same short message on EVERY monitor at once (wherever the person is looking), clicks go through.</summary>
+        void SayEverywhere(string message, double seconds)
+        {
+            var mons = Screen.AllScreens;
+            while (toasts.Count < mons.Length) toasts.Add(new UI.Toast());
+            for (int i = 0; i < toasts.Count; i++)
+            {
+                if (i < mons.Length) toasts[i].Say(mons[i].Bounds, message, seconds);
+                else if (toasts[i].Visible) toasts[i].Hide();   // a monitor went away
+            }
+        }
         long engineLogPos = -1;
         bool onOther; DateTime lastToast = DateTime.MinValue;
 
@@ -494,10 +528,8 @@ namespace DeskView
             onOther = now;
             if ((DateTime.Now - lastToast).TotalSeconds < 4) return;   // crossing back and forth quickly: don't nag
             lastToast = DateTime.Now;
-            if (toast == null) toast = new UI.Toast();
             var name = string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName;
-            var mon = Screen.FromPoint(Cursor.Position).Bounds;
-            toast.Say(mon, now ? string.Format("Keyboard and mouse are on {0}  -  move back, or press Ctrl+Alt+0", name)
+            SayEverywhere(now ? string.Format("Keyboard and mouse are on {0}  -  move back, or press Ctrl+Alt+0", name)
                                : string.Format("Back on {0}", S.ComputerName), now ? 2.5 : 1.5);
         }
 
@@ -648,6 +680,7 @@ namespace DeskView
                 int restart;
                 while (agent.SenderRestarts.TryDequeue(out restart)) { Log.Write("screen " + restart + ": its viewer went away - fresh listener"); Media.RestartSender(restart); }
                 while (forwarder.SenderRestarts.TryDequeue(out restart)) { Log.Write("screen " + restart + ": its viewer went away - fresh listener"); Media.RestartSender(restart); }
+                if (agent.TakeGatherHome()) GatherHome();
                 var req = agent.TakeRequestedMonitor();
                 if (req != null) SetAgentScreen(req);
                 Media.ServiceSenders();
@@ -688,7 +721,7 @@ namespace DeskView
                     foreach (var pl in Media.Players.Values) if (pl.Host != null) pl.Host.Raise();
                     UpdateDropZones();
                     if (strips.Count > 0) UpdateStrips();
-                    if (toast != null && toast.Visible) DeskViewPortal.MakePassive(toast.Handle);
+                    foreach (var t in toasts) if (t.Visible) DeskViewPortal.MakePassive(t.Handle);
                     if (S.Role == Role.Server) UpdatePortals(); else UpdateForwarderPicture();
                     var before = S.Peer; Peer();
                     if (S.Role == Role.Client && S.Peer != before) forwarder.Peer = S.Peer;

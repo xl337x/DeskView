@@ -87,6 +87,49 @@ public static class DeskViewDisplays
         return has;
     }
 
+    [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint flags);
+
+    /// <summary>"All back": every ordinary window whose centre is on one of the "from" screens (the extra screens) is
+    /// moved onto "home" (this computer's own screen) - same size when it fits, maximized ones maximized there,
+    /// staggered a little so they don't hide each other. The user never has to hunt for a window on a screen
+    /// nobody shows any more. Returns how many windows moved.</summary>
+    public static int BringWindowsHome(System.Drawing.Rectangle[] from, System.Drawing.Rectangle home)
+    {
+        SetThreadDpiAwarenessContext(new IntPtr(-4));
+        uint me = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+        var wins = new List<IntPtr>();
+        EnumWindows((h, l) =>
+        {
+            if (!IsWindowVisible(h) || GetWindowTextLength(h) == 0) return true;
+            int ex = GetWindowLong(h, -20);
+            if ((ex & 0x80) != 0 || (ex & 0x08000000) != 0) return true;       // tool windows, no-activate overlays
+            if (GetWindow(h, 4) != IntPtr.Zero) return true;                     // owned popups follow their owner
+            int cloaked; if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) return true;
+            uint pid; GetWindowThreadProcessId(h, out pid); if (pid == me) return true;
+            RECT r; if (!GetWindowRect(h, out r)) return true;
+            int cx = (r.L + r.R) / 2, cy = (r.T + r.B) / 2;
+            foreach (var s in from) if (s.Contains(cx, cy)) { wins.Add(h); break; }
+            return true;
+        }, IntPtr.Zero);
+        int n = 0;
+        foreach (var h in wins)
+        {
+            bool max = IsZoomed(h), min = IsIconic(h);
+            if (max || min) ShowWindow(h, 4);                                     // SW_SHOWNOACTIVATE: restore to move it
+            RECT r; if (!GetWindowRect(h, out r)) continue;
+            int w = Math.Min(r.R - r.L, home.Width), hh = Math.Min(r.B - r.T, home.Height);
+            int step = (n % 8) * 32;                                             // stagger: each window a bit lower-right
+            int x = home.Left + Math.Max(0, Math.Min(home.Width - w, (home.Width - w) / 2 + step - 112));
+            int y = home.Top + Math.Max(0, Math.Min(home.Height - hh, (home.Height - hh) / 2 + step - 112));
+            if (SetWindowPos(h, IntPtr.Zero, x, y, w, hh, 0x0004 | 0x0010)) n++;   // SWP_NOZORDER | SWP_NOACTIVATE
+            if (max) ShowWindow(h, 3);                                            // maximized again, now on home
+            else if (min) ShowWindow(h, 7);                                       // minimized again (SW_SHOWMINNOACTIVE)
+        }
+        return n;
+    }
+
     /// <summary>Names (\\.\DISPLAYn) of the virtual screens that are part of the desktop.</summary>
     public static string[] VirtualScreens()
     {

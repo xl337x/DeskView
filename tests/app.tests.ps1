@@ -154,6 +154,27 @@ if ($ffmpegExe) {
     Check 'report: no video key and no command line in it' ($txt -notmatch $secret -and $txt -notmatch 'Command line:')
     Remove-Item $rep -ErrorAction SilentlyContinue
 }
+# ---------------------------------------------------------------------------------------------- all back = windows come home
+# Ctrl+Alt+0 / "All back": windows on the laptop's extra screens move to its own screen (no hunting with Win+arrows).
+# A window of another process stands in; the "extra screen" is a 6x6 px spot around its centre, so no real window
+# of the user can match.
+$pb = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$wx = $pb.Right - 420; $wy = $pb.Bottom - 320
+$child = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', "Add-Type -A System.Windows.Forms; `$d = New-Object Windows.Forms.Form; `$d.Opacity = 0; `$d.Show(); `$d.Hide(); `$f = New-Object Windows.Forms.Form; `$f.Text = 'DVQA-HOME'; `$f.StartPosition = 'Manual'; `$f.SetBounds($wx, $wy, 300, 200); [void]`$f.ShowDialog()"
+$hw = [IntPtr]::Zero; for ($i = 0; $i -lt 100 -and $hw -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 100; $hw = [DeskViewPortal]::FindVisibleWindow($child.Id, 'DVQA-HOME') }
+if ($hw -ne [IntPtr]::Zero) {
+    Add-Type -Namespace DVQA -Name W -MemberDefinition '[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out System.Drawing.Rectangle r);' -ReferencedAssemblies System.Drawing -ErrorAction SilentlyContinue
+    $r0 = New-Object System.Drawing.Rectangle; [void][DVQA.W]::GetWindowRect($hw, [ref]$r0)   # Left, Top, Right, Bottom
+    $cx = [int](($r0.X + $r0.Width) / 2); $cy = [int](($r0.Y + $r0.Height) / 2)
+    $spot = New-Object System.Drawing.Rectangle ($cx - 3), ($cy - 3), 6, 6
+    $homeRect = New-Object System.Drawing.Rectangle ($pb.Left + 40), ($pb.Top + 40), 700, 500
+    $moved = [DeskViewDisplays]::BringWindowsHome(@($spot), $homeRect)
+    Start-Sleep -Milliseconds 300
+    $r1 = New-Object System.Drawing.Rectangle; [void][DVQA.W]::GetWindowRect($hw, [ref]$r1)
+    Check 'all back: the window on the extra screen moves onto this computer''s own screen, same size' ($moved -eq 1 -and $homeRect.Contains($r1.X, $r1.Y) -and $homeRect.Contains($r1.Width - 1, $r1.Height - 1) -and ($r1.Width - $r1.X) -eq ($r0.Width - $r0.X)) "moved=$moved at $($r1.X),$($r1.Y)"
+    Check 'all back: nothing else moves (no window centre on an empty spot)' (([DeskViewDisplays]::BringWindowsHome(@((New-Object System.Drawing.Rectangle -30000, -30000, 4, 4)), $homeRect)) -eq 0)
+}
+try { $child.Kill() } catch { }
 # ---------------------------------------------------------------------------------------------- live without report text
 # The player only writes the stream's size into its report while its status line is on (it is off: the report would
 # grow ~7 MB an hour). A picture must count as live once the player shows it, sized as the other computer told us.
