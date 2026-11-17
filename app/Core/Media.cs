@@ -405,8 +405,9 @@ namespace DeskView
             // a stream that stops sending (the other computer asleep, network gone) ends the player after 3 s instead of
             // leaving a frozen picture: the restart below takes over
             url += "&timeout=3000000";
-            // SDL_RENDER_VSYNC=0: show a decoded frame at once instead of waiting for the next screen refresh (up to 16 ms)
-            var env = new Dictionary<string, string> { { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" }, { "SDL_RENDER_VSYNC", "0" } };
+            // (SDL_RENDER_VSYNC=0 was tried: it saves up to 16 ms but the player then draws in a tight loop - measured
+            // about +0.6 of a CPU core per picture - which slowed the whole computer, mouse included. Vsync stays on.)
+            var env = new Dictionary<string, string> { { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" } };
             // Probe: 32 KB and no analysis - the picture size is known from the first key frame, and every byte probed
             // is time before the first picture. After two failed starts of a screen that never showed a picture, a
             // longer probe (a sender that starts slowly).

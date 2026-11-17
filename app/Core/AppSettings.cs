@@ -37,7 +37,7 @@ namespace DeskView
             DoubleTapMs = 250;
             HeartbeatMs = 5000;
             ClipboardEnabled = true;
-            AlwaysShowPointer = true; ShowGuide = true; SmartScreens = true; WarmPictures = true;
+            AlwaysShowPointer = true; ShowGuide = true; SmartScreens = true;
             InputEngine = "DeskView";
             ClipboardSizeMb = 3;
             ModifierShift = "shift";
@@ -104,9 +104,9 @@ namespace DeskView
         /// windows (screen 2 -> monitor 1, screen 3 -> monitor 2, ...), and gives itself back when it is empty.</summary>
         public bool SmartScreens { get; set; }
         /// <summary>Server: keep a hidden, connected picture of each of the other computer's extra screens, so one shows
-        /// at once when a window lands there (no connecting, no waiting for a key frame). Costs a little bandwidth and
-        /// decoding for screens nobody looks at (empty screens send almost nothing).</summary>
-        public bool WarmPictures { get; set; }
+        /// at once when a window lands there. OFF by default: measured live, each hidden player used 2-2.7 CPU cores
+        /// (decoding at full speed for nobody) and showed a frozen frame when brought up. (Was "WarmPictures", on.)</summary>
+        public bool KeepPicturesReady { get; set; }
         /// <summary>Smart screens' memory, kept across restarts: monitors it is showing a screen on (it gives them
         /// back when that screen empties), and screens the user gave back while they held windows (left alone until
         /// they empty).</summary>

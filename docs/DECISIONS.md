@@ -169,3 +169,10 @@ the code independently and one judge verifying each claim against the code (two 
   flashes. Showing that screen moves the running picture onto the monitor (`DeskViewPictureHost.Unpark`) - no
   connect, no key-frame wait (was 1.0-1.5 s). Giving it back parks it again instead of closing it. Cost: one idle
   stream per extra screen (an empty screen sends almost nothing) and its decoding.
+
+## Live QA (recorded) found: hidden pictures burn CPU, vsync-off too
+- Recorded live: a "kept ready" picture brought onto a monitor showed a FROZEN old frame (the laptop's wallpaper,
+  not the window just put there), and each hidden player used 2-2.7 CPU cores. Turning vsync off added ~0.6 core
+  per visible player (the player draws in a tight loop). Together they slowed the whole server, mouse included.
+- Reverted vsync-off; "kept ready" pictures are off by default (setting renamed KeepPicturesReady so the "on" saved
+  by the previous version doesn't apply). A future version must pause hidden decoding, not just hide the window.

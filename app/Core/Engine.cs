@@ -740,7 +740,7 @@ namespace DeskView
                 }
                 // the other computer's extra screens (2..n) kept ready on the server, so a smart screen shows at once
                 int rc = agent.ScreenCount;
-                Media.WarmScreens = S.Role == Role.Server && S.WarmPictures && rc > 1 ? Enumerable.Range(2, rc - 1).ToArray() : new int[0];
+                Media.WarmScreens = S.Role == Role.Server && S.KeepPicturesReady && rc > 1 ? Enumerable.Range(2, rc - 1).ToArray() : new int[0];
                 Media.ServiceWarm(Peer());
                 if (Media.ServicePlayers(Peer()))
                 {
