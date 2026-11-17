@@ -175,6 +175,8 @@ if ($hw -ne [IntPtr]::Zero) {
     Check 'all back: nothing else moves (no window centre on an empty spot)' (([DeskViewDisplays]::BringWindowsHome(@((New-Object System.Drawing.Rectangle -30000, -30000, 4, 4)), $homeRect)) -eq 0)
 }
 try { $child.Kill() } catch { }
+# a drag in progress keeps its screen 'occupied' (never given back mid-drag); nothing held here = no drag
+Check 'drag screen: none while no window is being dragged and no button is held' ([DeskViewDisplays]::DragScreen(@([System.Windows.Forms.Screen]::AllScreens | % { $_.Bounds })) -eq -1)
 # ---------------------------------------------------------------------------------------------- live without report text
 # The player only writes the stream's size into its report while its status line is on (it is off: the report would
 # grow ~7 MB an hour). A picture must count as live once the player shows it, sized as the other computer told us.

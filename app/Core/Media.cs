@@ -207,7 +207,9 @@ namespace DeskView
             // Wi-Fi 8 frames with I-frames capped, so a key frame doesn't arrive as one 1 MB burst every 0.5 s (the hitch).
             bool wifiLink = prof == "WiFi";
             string buf = wifiLink ? (mbps * 1000 * 8 / 60) + "k" : (mbps * 250) + "k";
-            string iCap = wifiLink ? " -max_frame_size_i " + (mbps * 1000000 / 60 * 6 / 8) : "";
+            // (an I-frame size cap was tried on Wi-Fi: the first frame of every picture came out blocky - removed;
+            // the 8-frame rate buffer alone keeps key-frame bursts short)
+            string iCap = "";
             if (enc == "h264_qsv" && qsvLowPower == null) qsvLowPower = TestEncoder("h264_qsv -low_power 1");
             string lowPower = enc == "h264_qsv" && qsvLowPower == true ? " -low_power 1" : "";
             // -slices 4: the player decodes a frame on 4 threads instead of 1 (1440p: 10.4 -> 4.8 ms a frame, measured)

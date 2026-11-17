@@ -87,6 +87,28 @@ public static class DeskViewDisplays
         return has;
     }
 
+    [StructLayout(LayoutKind.Sequential)] struct GUITHREADINFO { public int cbSize, flags; public IntPtr active, focus, capture, menuOwner, moveSize, caret; public RECT caretRect; }
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+
+    /// <summary>A window is being dragged (or sized) right now, or a mouse button is held: the screen under the pointer
+    /// is where the person is putting something. -1 if not dragging, else the index in "screens" (or -1 if outside).
+    /// Smart screens use it: a screen must never be given back in the middle of a drag (seen live: the dragged window
+    /// was counted on no screen, and the monitor showing it went away mid-drag), and it shows up while dragging.</summary>
+    public static int DragScreen(System.Drawing.Rectangle[] screens)
+    {
+        SetThreadDpiAwarenessContext(new IntPtr(-4));
+        var gi = new GUITHREADINFO(); gi.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
+        bool moving = GetGUIThreadInfo(0, ref gi) && (gi.flags & 0x2) != 0;       // GUI_INMOVESIZE (foreground thread)
+        bool held = (GetAsyncKeyState(0x01) & 0x8000) != 0 || (GetAsyncKeyState(0x02) & 0x8000) != 0;
+        if (!moving && !held) return -1;
+        POINT p; if (!GetCursorPos(out p)) return -1;
+        for (int i = 0; i < screens.Length; i++) if (screens[i].Contains(p.X, p.Y)) return i;
+        return -1;
+    }
+
     [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint flags);

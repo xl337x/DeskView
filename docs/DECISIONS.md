@@ -176,3 +176,13 @@ the code independently and one judge verifying each claim against the code (two 
   per visible player (the player draws in a tight loop). Together they slowed the whole server, mouse included.
 - Reverted vsync-off; "kept ready" pictures are off by default (setting renamed KeepPicturesReady so the "on" saved
   by the previous version doesn't apply). A future version must pause hidden decoding, not just hide the window.
+
+## Recorded real drag: blocky first frame, picture gone mid-drag (A, B)
+- Recorded live (server mouse over the edge, a real Notepad dragged onto the laptop's extra screens): the dragged
+  window appeared on the server ~3.7 s after it arrived; the first frame was blocky; mid-drag the monitors were given
+  back (the laptop counted the dragged window on no screen, the 3 s empty rule fired).
+- A: the Wi-Fi I-frame cap is removed (it made every first frame blocky); the 8-frame rate buffer stays.
+- B: while a window is moved/sized (GUI_INMOVESIZE) or a mouse button is held, the screen under the pointer counts
+  as holding a window (`DeskViewDisplays.DragScreen`), checked every 0.2 s while dragging (0.5 s otherwise): never
+  given back mid-drag, and the picture starts as soon as the drag reaches a screen.
+- C (picture ready before the drop, senders not restarted per viewer) waits for the council.

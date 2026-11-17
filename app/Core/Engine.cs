@@ -411,12 +411,18 @@ namespace DeskView
         string lastBusyLogged = null;
 
         /// <summary>Client: tell the server which extra screens (2, 3, ...) hold windows, when that changes.</summary>
+        bool dragging;
         void ReportOccupied()
         {
-            if (S.Role != Role.Client || !forwarder.Connected || (DateTime.Now - lastOccupiedCheck).TotalMilliseconds < 500) return;
+            // every 0.5 s, every 0.2 s while something is being dragged (the picture should start while the drag is on)
+            if (S.Role != Role.Client || !forwarder.Connected || (DateTime.Now - lastOccupiedCheck).TotalMilliseconds < (dragging ? 200 : 500)) return;
             lastOccupiedCheck = DateTime.Now;
             var screens = Tools.SharedScreens();
-            var has = DeskViewDisplays.ScreensWithWindows(screens.Select(s => s.Bounds).ToArray());
+            var rects = screens.Select(s => s.Bounds).ToArray();
+            var has = DeskViewDisplays.ScreensWithWindows(rects);
+            int drag = DeskViewDisplays.DragScreen(rects);
+            dragging = drag >= 0;
+            if (drag >= 1) has[drag] = true;   // being dragged onto/over an extra screen: it holds a window (never given back mid-drag)
             var list = string.Join(",", Enumerable.Range(1, screens.Length - 1).Where(i => has[i]).Select(i => (i + 1).ToString()).ToArray());
             if (list != lastOccupied || (DateTime.Now - lastOccupiedSent).TotalSeconds > 5)
             {
