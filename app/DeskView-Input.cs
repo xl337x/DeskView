@@ -473,10 +473,11 @@ public class DeskViewAgent
 
     /// <summary>Monitor the viewer asked for since the last call (atomic take), or null.</summary>
     public string TakeRequestedMonitor() { return Interlocked.Exchange(ref requestedMonitor, null); }
-    int gatherHome;
-    /// <summary>The other computer pressed "all back" (Ctrl+Alt+0): this computer's windows on its extra screens should
-    /// come home to its own screen. True once per request (the app takes it).</summary>
-    public bool TakeGatherHome() { return Interlocked.Exchange(ref gatherHome, 0) != 0; }
+    readonly ConcurrentQueue<int> gatherHome = new ConcurrentQueue<int>();
+    /// <summary>The other computer gave screens back: this computer's windows on them should come home to its own
+    /// screen. -1 = all extra screens ("All back", Ctrl+Alt+0), n = only screen n ("Give this monitor back"), 0 = none
+    /// waiting. One request per call (the app takes them).</summary>
+    public int TakeGatherHome() { int n; return gatherHome.TryDequeue(out n) ? n : 0; }
 
     public void Start()
     {
@@ -776,7 +777,7 @@ public class DeskViewAgent
                 case "H": Mouse(0x1000, int.Parse(p[1])); break;
                 case "K": Key(ushort.Parse(p[1]), ushort.Parse(p[2]), p[3] == "1", p[4] == "1"); Interlocked.Increment(ref Keys); break;
                 case "S": if (p.Length > 1 && p[1].Length <= 16) Interlocked.Exchange(ref requestedMonitor, p[1]); break;
-                case "GB": Interlocked.Exchange(ref gatherHome, 1); break;   // "all back" on the other computer
+                case "GB": { int n; gatherHome.Enqueue(p.Length > 1 && int.TryParse(p[1], out n) && n >= 1 && n <= 10 ? n : -1); break; }   // screens given back on the other computer
                 case "MS":
                 {
                     // a move over one of several pictures: which screen, and where on it (0..65535 each way)
@@ -1326,6 +1327,8 @@ public class DeskViewForwarder
     /// <summary>"All back" here: the other computer brings the windows on its extra screens home to its own screen
     /// (an agent that doesn't know "GB" ignores it).</summary>
     public void AskGatherHome() { Enqueue("GB"); }
+    /// <summary>Only screen n was given back: its windows come home (an agent that only knows "GB" brings all).</summary>
+    public void AskGatherHome(int n) { Enqueue("GB " + n); }
 
     /// <summary>Tells the other computer which of this computer's screens hold windows (e.g. "2,4").</summary>
     public void ReportOccupied(string screens) { Enqueue("O " + (string.IsNullOrEmpty(screens) ? "-" : screens)); }

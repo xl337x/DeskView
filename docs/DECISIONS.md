@@ -153,3 +153,10 @@ the code independently and one judge verifying each claim against the code (two 
 - Live check on the server (Intel): the exact Wi-Fi and wired QSV lines capture+encode 180 frames at 61 fps, exit 0.
 - Not yet (1-week set): virtual screens sized 1:1 to the monitor that shows them, bitrate from the slower end's
   link, adaptive tiers, SRT 80 ms.
+
+## Guide strip buttons work again
+- Seen live: "Give this monitor back" and "All back" did nothing (no "given back" line in the log: the click never
+  reached the button). The nearly invisible file drop zone covered the whole picture INCLUDING the strip; both are
+  raised every tick, so whenever the zone ended up on top it ate the clicks. The zone now starts below the strip.
+- "Give this monitor back" also brings that screen's windows home on the laptop ("GB n"; "GB" = all screens, as
+  before; an older agent treats "GB n" as all). Both buttons log their click.

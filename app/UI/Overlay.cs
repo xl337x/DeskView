@@ -23,8 +23,8 @@ namespace DeskView.UI
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
             BackColor = Color.FromArgb(17, 24, 39); Opacity = 0.88; Height = StripHeight;
             text = new Label { AutoSize = false, Dock = DockStyle.Fill, ForeColor = Color.White, Font = new Font("Segoe UI", 9.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10, 0, 0, 0), UseMnemonic = false };
-            var back = StripButton("Give this monitor back", (o, e) => engine.SetScreen(Monitor, 0));
-            var all = StripButton("All back  (Ctrl+Alt+0)", (o, e) => engine.ShowOn("off"));
+            var back = StripButton("Give this monitor back", (o, e) => engine.GiveBack(Monitor));
+            var all = StripButton("All back  (Ctrl+Alt+0)", (o, e) => engine.AllBack());
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = BackColor, Padding = new Padding(0, 3, 6, 0) };
             buttons.Controls.Add(back); buttons.Controls.Add(all);
             Controls.Add(text); Controls.Add(buttons);

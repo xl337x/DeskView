@@ -311,7 +311,23 @@ namespace DeskView
 
         /// <summary>Laptop: every window on the extra (virtual) screens moves to its own screen. On a worker thread:
         /// moving another program's window waits for that program, and a hung one must not stop DeskView.</summary>
-        void GatherHome()
+        void GatherHome() { GatherHome(-1); }
+
+        /// <summary>Strip button "Give this monitor back": that monitor stops showing the other computer, and the
+        /// windows that were on that screen go home to the other computer's own screen (no hunting for them).</summary>
+        public void GiveBack(string monitor)
+        {
+            int n; bool had = S.Screens.TryGetValue(monitor, out n);
+            Log.Write("guide: \"Give this monitor back\" clicked on " + monitor + (had ? " (it showed screen " + n + ")" : " (it showed nothing)"));
+            SetScreen(monitor, 0);
+            if (had && S.Role == Role.Server && Builtin) forwarder.AskGatherHome(n);
+            SayEverywhere(had ? "Screen " + n + " given back - its windows return to " + (string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName) : "Given back", 2);
+        }
+
+        /// <summary>Strip button "All back" (same as Ctrl+Alt+0).</summary>
+        public void AllBack() { Log.Write("guide: \"All back\" clicked"); ShowOn("off"); }
+
+        void GatherHome(int screen)
         {
             if (S.Role != Role.Client) return;
             System.Threading.ThreadPool.QueueUserWorkItem(delegate
@@ -319,10 +335,12 @@ namespace DeskView
                 try
                 {
                     var virt = new HashSet<string>(DeskViewDisplays.VirtualScreens(), StringComparer.OrdinalIgnoreCase);
-                    var from = Screen.AllScreens.Where(x => virt.Contains(x.DeviceName)).Select(x => x.Bounds).ToArray();
+                    var shared = Tools.SharedScreens();
+                    // one screen (n = its number in the shared order) or all of them; only virtual screens, never a real monitor
+                    var from = (screen > 0 ? shared.Skip(screen - 1).Take(1) : shared.AsEnumerable()).Where(x => virt.Contains(x.DeviceName)).Select(x => x.Bounds).ToArray();
                     if (from.Length == 0) return;
                     int n = DeskViewDisplays.BringWindowsHome(from, Screen.PrimaryScreen.WorkingArea);
-                    Log.Write("all back: " + n + " window(s) moved from the extra screens to this computer's own screen");
+                    Log.Write((screen > 0 ? "screen " + screen + " given back: " : "all back: ") + n + " window(s) moved from the extra screen(s) to this computer's own screen");
                 }
                 catch (Exception e) { Log.Write("all back: moving windows failed: " + e.Message); }
             });
@@ -630,7 +648,14 @@ namespace DeskView
                     z.Dropped += SendFiles;
                     zones[pl.Key] = z;
                 }
-                z.Place(Media.PictureRect(pl));
+                var zr = Media.PictureRect(pl);
+                if (S.ShowGuide)
+                {
+                    // never over the guide strip: an (invisible) drop zone above it ate the clicks on its buttons
+                    int cut = Math.Max(0, pl.Screen.Bounds.Top + UI.MonitorStrip.StripHeight - zr.Y);
+                    zr = new Rectangle(zr.X, zr.Y + cut, zr.Width, Math.Max(1, zr.Height - cut));
+                }
+                z.Place(zr);
                 DeskViewPortal.MakePassive(z.Handle);   // above the picture, without taking focus
             }
         }
@@ -680,7 +705,7 @@ namespace DeskView
                 int restart;
                 while (agent.SenderRestarts.TryDequeue(out restart)) { Log.Write("screen " + restart + ": its viewer went away - fresh listener"); Media.RestartSender(restart); }
                 while (forwarder.SenderRestarts.TryDequeue(out restart)) { Log.Write("screen " + restart + ": its viewer went away - fresh listener"); Media.RestartSender(restart); }
-                if (agent.TakeGatherHome()) GatherHome();
+                int home; while ((home = agent.TakeGatherHome()) != 0) GatherHome(home);
                 var req = agent.TakeRequestedMonitor();
                 if (req != null) SetAgentScreen(req);
                 Media.ServiceSenders();

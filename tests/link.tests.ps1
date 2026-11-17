@@ -96,6 +96,10 @@ try {
     Send 'CB'; Send 'CD !!notbase64!!'; Send 'CE'; Send 'P'; Start-Sleep -Milliseconds 200
     Check 'a broken clipboard message does not break the link' ($agent.Client -ne '')
 
+    # screens given back on the other computer: their windows come home ("GB" = all, "GB n" = only screen n)
+    Send 'GB 3'; Send 'GB'; Send 'GB 99'; Start-Sleep -Milliseconds 200
+    $g = @($agent.TakeGatherHome(), $agent.TakeGatherHome(), $agent.TakeGatherHome(), $agent.TakeGatherHome())
+    Check 'give back: "GB 3" = screen 3 only, "GB" = all, nonsense = all, then nothing waiting' (($g -join ',') -eq '3,-1,-1,0') ($g -join ',')
     # smart screens: the laptop says how many screens it has and which hold windows
     Send 'Q 4'; Send 'O 2,4'; Start-Sleep -Milliseconds 200
     Check 'smart screens: screen count and screens with windows arrive' ($agent.ScreenCount -eq 4 -and $agent.OccupiedScreens -eq '2,4') "count=$($agent.ScreenCount) occupied=$($agent.OccupiedScreens)"
