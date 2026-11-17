@@ -453,7 +453,7 @@ namespace DeskView
 
         // Laptop: a window the person brings up (taskbar, Alt+Tab, a notification) that sits on an extra screen no
         // monitor shows is moved onto this computer's own screen - seen live: Teams opened on a hidden extra screen
-        // and could not be reached. Not during a drag, not while the other computer drives this one, and only after
+        // and could not be reached. Not during a drag (also when the other computer drives this one), and only after
         // it stayed there 1.5 s (a window just dragged there is shown by smart screens within that time).
         IntPtr strandedWin = IntPtr.Zero; DateTime strandedSince;
         void RescueStranded()
@@ -466,7 +466,7 @@ namespace DeskView
             IntPtr w; int i = DeskViewDisplays.ForegroundScreen(rects, out w);
             var virt = new HashSet<string>(DeskViewDisplays.VirtualScreens(), StringComparer.OrdinalIgnoreCase);
             bool stranded = i >= 1 && virt.Contains(screens[i].DeviceName) && !shownList.Split(',').Contains((i + 1).ToString())
-                && DeskViewDisplays.DragScreen(rects) < 0 && !agent.DrivenRecently;
+                && DeskViewDisplays.DragScreen(rects) < 0;   // also while the other computer drives this one: that is how it is used
             if (!stranded) { strandedWin = IntPtr.Zero; return; }
             if (w != strandedWin) { strandedWin = w; strandedSince = DateTime.Now; return; }
             if ((DateTime.Now - strandedSince).TotalSeconds < 1.5) return;

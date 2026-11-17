@@ -192,6 +192,6 @@ the code independently and one judge verifying each claim against the code (two 
   screen alone while it holds windows), so it was on no monitor at all and could not be used.
 - The server now tells the laptop which of its screens are on a monitor ("SH 2,4", over the same link as "SR"). On the
   laptop, a foreground window (taskbar, Alt+Tab, a notification) centred on an extra screen nobody shows, for 1.5 s,
-  not during a drag and not while the server drives the laptop, is moved onto the laptop's own screen
+  not during a drag (also while the server drives the laptop - that is how it is used), is moved onto the laptop's own screen
   (`DeskViewDisplays.BringWindowHome`), with a log line and a note on screen. An older server sends no "SH": nothing
   is moved then.
