@@ -456,6 +456,17 @@ public class DeskViewPictureHost : Form
             SetWindowPos(child, IntPtr.Zero, 0, 0, ClientSize.Width, ClientSize.Height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     }
 
+    /// <summary>A picture kept ready: hidden, its player still running and connected inside.</summary>
+    public void Park() { if (Visible) Hide(); }
+
+    /// <summary>The ready picture goes on a monitor: shown at once, already playing.</summary>
+    public void Unpark(System.Drawing.Rectangle bounds)
+    {
+        Bounds = bounds;
+        if (!Visible) Show();
+        Raise();
+    }
+
     /// <summary>Back in front of other always-on-top windows (the taskbar, once clicked, goes above it).</summary>
     public void Raise() { if (Visible) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
 

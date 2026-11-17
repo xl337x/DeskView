@@ -1431,7 +1431,7 @@ public class DeskViewForwarder
                 // DeskView's own hotkeys (Ctrl+Alt+0..9 / D) are always handled here, on the machine you sit at,
                 // never forwarded - and keys that the engine injects from the other machine never count.
                 if (down) LocalInputWins(true);                         // typing here while the other machine drives: back here
-                if (HotkeysEnabled && ctrlNow && altNow && ((vk >= 0x30 && vk <= 0x39) || vk == 0x44))
+                if (HotkeysEnabled && ctrlNow && altNow && ((vk >= 0x30 && vk <= 0x39) || vk == 0x44 || vk == 0x47))   // 0..9, D, G
                 {
                     if (down)
                     {

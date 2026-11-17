@@ -77,6 +77,8 @@ namespace DeskView
     {
         public string Key; public Screen Screen; public int RemoteN; public Process P; public string Report;
         public Size? RemoteRes; public string RemoteRect; public bool Passive, WasLive; public DeskViewPictureHost Host; public int AdoptFails; public int Fails; public bool EverLive; public bool Announced, WarnedDown;
+        public bool Warm;                    // kept ready: hidden, connected (see Media.Warm)
+        public Rectangle? StartAt;           // where the player starts instead of its monitor (off every screen when warm)
         public DateTime LastStart = DateTime.MinValue, ShownAt = DateTime.MinValue;
         public bool Live { get { return RemoteRes.HasValue && P != null && !P.HasExited; } }
     }
@@ -87,6 +89,10 @@ namespace DeskView
         readonly string ffmpeg = Tools.Find("ffmpeg"), ffplay = Tools.Find("ffplay");
         public readonly Dictionary<int, Sender> Senders = new Dictionary<int, Sender>();
         public readonly Dictionary<string, Player> Players = new Dictionary<string, Player>();
+        /// <summary>Pictures kept ready, by the other computer's screen number: hidden, playing, connected. Shown
+        /// on a monitor at once when wanted (WarmScreens says which screens to keep ready).</summary>
+        public readonly Dictionary<int, Player> Warm = new Dictionary<int, Player>();
+        public int[] WarmScreens = new int[0];
         bool cpuPath;
         public bool HasFFmpeg { get { return ffmpeg != null && ffplay != null; } }
         public event Action<string, bool> Notice;   // message, isWarning
@@ -299,7 +305,34 @@ namespace DeskView
         void OnViewerGone(Player pl) { if (!pl.EverLive) return; var h = ViewerGone; if (h != null) h(pl.RemoteN); }
 
         // -------------------------------------------------------------------------------------------------- players
-        public void StopPlayers() { foreach (var p in Players.Values) StopPlayer(p); Players.Clear(); }
+        public void StopPlayers() { foreach (var p in Players.Values) StopPlayer(p); Players.Clear(); foreach (var p in Warm.Values) StopPlayer(p); Warm.Clear(); }
+
+        /// <summary>Keeps one hidden, connected picture for each screen in WarmScreens that no monitor shows (started
+        /// off every screen, so nothing flashes), restarts them when they end, drops the ones no longer wanted.</summary>
+        public void ServiceWarm(string peer)
+        {
+            if (NoMedia || ffplay == null || string.IsNullOrEmpty(peer)) return;
+            foreach (var n in Warm.Keys.ToList())
+                if (!WarmScreens.Contains(n) || Players.Values.Any(p => p.RemoteN == n)) { StopPlayer(Warm[n]); Warm.Remove(n); }
+            var all = Screen.AllScreens;
+            int right = all.Max(x => x.Bounds.Right) + 200, top = all.Min(x => x.Bounds.Top);
+            foreach (var n in WarmScreens)
+            {
+                if (Players.Values.Any(p => p.RemoteN == n)) continue;
+                Player pl;
+                if (!Warm.TryGetValue(n, out pl))
+                {
+                    var rr = RemoteScreen != null ? RemoteScreen(n) : null;
+                    var size = rr.HasValue ? rr.Value.Size : Screen.PrimaryScreen.Bounds.Size;
+                    pl = new Player { Key = "warm" + n, Screen = Screen.PrimaryScreen, RemoteN = n, Warm = true, WarnedDown = true,
+                        StartAt = new Rectangle(right, top, size.Width, size.Height),
+                        Report = Path.Combine(Path.GetTempPath(), "deskview-ffplay-warm" + n + "-" + (++reportSeq) + ".log") };
+                    Warm[n] = pl;
+                    Log.Write("screen " + n + " of the other computer: kept ready (hidden picture)");
+                }
+                ServicePlayer(pl, peer);   // starts it, adopts it hidden, restarts it if it ended
+            }
+        }
         public void StopPlayer(Player p)
         {
             // the player first, then the window holding its picture (never destroy a window that still has its child)
@@ -326,11 +359,28 @@ namespace DeskView
                     Players[to.Item1] = pl;
                     continue;
                 }
+                // given back: keep it ready (hidden, still playing) so the next show is instant
+                if (WarmScreens.Contains(pl.RemoteN) && !Warm.ContainsKey(pl.RemoteN) && S.Picture != "Stretch" && pl.P != null && !pl.P.HasExited && pl.Host != null && pl.Host.Holding)
+                {
+                    pl.Host.Park(); pl.Warm = true; pl.Key = "warm" + pl.RemoteN; Warm[pl.RemoteN] = pl;
+                    continue;
+                }
                 StopPlayer(pl);
             }
             foreach (var x in w)
                 if (!Players.ContainsKey(x.Item1))
                 {
+                    Player ready;
+                    if (Warm.TryGetValue(x.Item3, out ready) && S.Picture != "Stretch" && ready.P != null && !ready.P.HasExited && ready.Host != null && ready.Host.Holding)
+                    {
+                        // the picture is already playing: just show it there
+                        Warm.Remove(x.Item3);
+                        ready.Warm = false; ready.StartAt = null; ready.Key = x.Item1; ready.Screen = x.Item2; ready.Announced = false; ready.WarnedDown = false;
+                        ready.Host.Unpark(x.Item2.Bounds);
+                        Players[x.Item1] = ready;
+                        Log.Write(x.Item1 + ": the other computer's screen " + x.Item3 + " shown at once (it was kept ready)");
+                        continue;
+                    }
                     // its own report file: a picture moved to another monitor keeps its file, which must never be shared
                     var pl = new Player { Key = x.Item1, Screen = x.Item2, RemoteN = x.Item3, Report = Path.Combine(Path.GetTempPath(), "deskview-ffplay-" + Regex.Replace(x.Item1, @"[^\w]", "") + "-" + (++reportSeq) + ".log") };
                     Players[x.Item1] = pl; StartPlayer(pl, peer);
@@ -343,7 +393,7 @@ namespace DeskView
             if (pl.Host != null) pl.Host.Release();
             if (NoMedia) return;
             if (ffplay == null || string.IsNullOrEmpty(peer)) return;
-            string prof = Profile; var r = pl.Screen.Bounds;
+            string prof = Profile; var r = pl.StartAt ?? pl.Screen.Bounds;
             int port = S.VideoPort + pl.RemoteN - 1;
             // Always encrypted (an unencrypted fallback for the old pre-app script version was removed: nobody runs it,
             // and it would have let a picture travel unencrypted).
@@ -424,8 +474,8 @@ namespace DeskView
                 {
                     if (pl.AdoptFails < 2)
                     {
-                        if (pl.Host == null) pl.Host = new DeskViewPictureHost(pl.Screen.Bounds);
-                        if (pl.Host.Adopt(w)) { pl.Passive = true; pl.ShownAt = DateTime.Now; changed = true; }
+                        if (pl.Host == null) pl.Host = new DeskViewPictureHost(pl.StartAt ?? pl.Screen.Bounds);
+                        if (pl.Host.Adopt(w)) { pl.Passive = true; pl.ShownAt = DateTime.Now; changed = true; if (pl.Warm) pl.Host.Park(); }
                         else if (++pl.AdoptFails >= 2) Log.Write("could not hold the picture for " + pl.Key + " in DeskView's own window - showing it as is");
                     }
                     else { DeskViewPortal.MakePassive(w); pl.Passive = true; pl.ShownAt = DateTime.Now; changed = true; }   // fallback: the player's own window

@@ -160,3 +160,12 @@ the code independently and one judge verifying each claim against the code (two 
   raised every tick, so whenever the zone ended up on top it ate the clicks. The zone now starts below the strip.
 - "Give this monitor back" also brings that screen's windows home on the laptop ("GB n"; "GB" = all screens, as
   before; an older agent treats "GB n" as all). Both buttons log their click.
+
+## Shortcuts, instant feedback, pictures kept ready
+- Ctrl+Alt+G: give back the monitor under the mouse (its windows go home on the laptop). The strip button shows it.
+- A smart screen says "Showing <laptop>'s screen n" on its monitor at once, before the picture is there.
+- Warm pictures (server, setting WarmPictures, default on): each of the laptop's EXTRA screens (2..n; not its main
+  screen, which is always busy) has a hidden, connected player (`Media.Warm`), started off every screen so nothing
+  flashes. Showing that screen moves the running picture onto the monitor (`DeskViewPictureHost.Unpark`) - no
+  connect, no key-frame wait (was 1.0-1.5 s). Giving it back parks it again instead of closing it. Cost: one idle
+  stream per extra screen (an empty screen sends almost nothing) and its decoding.

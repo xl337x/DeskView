@@ -358,6 +358,13 @@ namespace DeskView
         void OnHotkey(int vk)
         {
             if (vk == 0x30) { ShowOn("off"); return; }
+            if (vk == 0x47)
+            {
+                // Ctrl+Alt+G: give back the monitor the mouse is on (and its windows go home)
+                if (S.Role == Role.Server) GiveBack(Tools.Short(Screen.FromPoint(Cursor.Position)));
+                else ShowOn("off");
+                return;
+            }
             if (vk == 0x44)
             {
                 List<string> names; int idx;
@@ -468,6 +475,9 @@ namespace DeskView
                 var mon = monitors[n - 2];
                 if (S.Screens.ContainsKey(mon)) continue;                              // that monitor shows something the user chose
                 autoShown[mon] = n; emptySince.Remove(mon); ApplyScreen(mon, n);
+                // at once, before the picture is there: the person sees the move was understood
+                var sm = Tools.ByName(mon);
+                if (sm != null) SayOn(sm.Bounds, string.Format("Showing {0}'s screen {1}  -  Ctrl+Alt+G gives it back", string.IsNullOrEmpty(S.RemoteName) ? "the other computer" : S.RemoteName, n), 1.5);
                 var who = string.IsNullOrEmpty(S.RemoteName) ? "The other computer's" : S.RemoteName + "'s";
                 OnNotice(string.Format("{0} screen {1} is now on monitor {2} (a window went there)", who, n, n - 1), false);
             }
@@ -486,6 +496,14 @@ namespace DeskView
         // ------------------------------------------------------------------------------------------------- the guide
         readonly Dictionary<string, UI.MonitorStrip> strips = new Dictionary<string, UI.MonitorStrip>();
         readonly List<UI.Toast> toasts = new List<UI.Toast>();
+
+        /// <summary>A short message on one monitor only (the others keep what they show).</summary>
+        void SayOn(Rectangle monitor, string message, double seconds)
+        {
+            var mons = Screen.AllScreens;
+            while (toasts.Count < mons.Length) toasts.Add(new UI.Toast());
+            for (int i = 0; i < mons.Length; i++) if (mons[i].Bounds == monitor) { toasts[i].Say(monitor, message, seconds); return; }
+        }
 
         /// <summary>The same short message on EVERY monitor at once (wherever the person is looking), clicks go through.</summary>
         void SayEverywhere(string message, double seconds)
@@ -720,6 +738,10 @@ namespace DeskView
                     if (S.Role == Role.Server) S.Screens.Remove(pl.Key); else S.ClientView = 0;
                     S.Save(); SyncPlayers();
                 }
+                // the other computer's extra screens (2..n) kept ready on the server, so a smart screen shows at once
+                int rc = agent.ScreenCount;
+                Media.WarmScreens = S.Role == Role.Server && S.WarmPictures && rc > 1 ? Enumerable.Range(2, rc - 1).ToArray() : new int[0];
+                Media.ServiceWarm(Peer());
                 if (Media.ServicePlayers(Peer()))
                 {
                     UpdateDropZones();

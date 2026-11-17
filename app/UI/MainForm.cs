@@ -150,7 +150,7 @@ namespace DeskView.UI
                 string.Format("Move the mouse onto that monitor - the mouse is now on {0}.", other),
                 string.Format("Grab the window's title bar (for example a PowerShell tab on {0}) and drag it to another monitor showing {0}: it moves there like on a normal multi-monitor PC.", other),
                 string.Format("Want more places for {0}'s windows? Give the laptop extra virtual screens (Screens page > More screens on a laptop), then show each one on a monitor.", other),
-                "Shortcut: Ctrl+Alt+1..9 puts the other computer's main screen on monitor 1..9, Ctrl+Alt+D cycles it through your monitors, Ctrl+Alt+0 hides it."));
+                "Shortcut: Ctrl+Alt+1..9 puts the other computer's main screen on monitor 1..9, Ctrl+Alt+D cycles it through your monitors, Ctrl+Alt+G gives back the monitor under the mouse, Ctrl+Alt+0 hides it all."));
             page.Controls.Add(How("Work on the other computer",
                 "Your keyboard and mouse follow the pointer, across both computers.",
                 string.Format("Move the mouse off the edge set on the Connection page to go to {0}; move it back to return.", other),
@@ -202,7 +202,7 @@ namespace DeskView.UI
             var map = Theme.Card("Your monitors");
             var sm = new ScreenMap(engine);
             map.Controls.Add(sm);
-            map.Controls.Add(Theme.Hint("Shortcuts: Ctrl+Alt+1..9 puts the other computer's main screen on that monitor, Ctrl+Alt+0 hides everything, Ctrl+Alt+D cycles."));
+            map.Controls.Add(Theme.Hint("Shortcuts: Ctrl+Alt+1..9 puts the other computer's main screen on that monitor, Ctrl+Alt+G gives back the monitor under the mouse (its windows go home), Ctrl+Alt+0 brings everything back, Ctrl+Alt+D cycles."));
             if (!engine.Builtin && !CoreControl.PortalCapable) map.Controls.Add(Theme.Status("The installed engine has no portals: you can watch the other computer here but not work on it directly.", Theme.Warn));
             page.Controls.Add(map);
             page.Controls.Add(VirtualScreensCard());
