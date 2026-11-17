@@ -138,3 +138,18 @@ the code independently and one judge verifying each claim against the code (two 
   hand kept moving; the sender logs `mouse-tx` (merged count, queue depth, slowest write). Log writes from input
   threads go through `Log.Later` (time taken at the call, file written on a worker).
 - Not done (per council): UDP for motion - only if logs show TCP stalls after these fixes.
+
+## Fast, sharp pictures - 1-day set (council round 3, video)
+- Bitrate per screen by its size and network (1080p 20/15, 1440p 35/25, 4K 60/40 Mbit/s wired/Wi-Fi) instead of a
+  flat 20/10: 1440p text went soft (SSIM 0.932 at 12 vs 0.960 at 20 Mbit/s).
+- `-slices 4` on every encoder: the player decodes on 4 threads (1440p 10.4 -> 4.8 ms a frame, measured).
+- Intel `-low_power 1` (probed once, off if the driver lacks it): 8.2 -> 6.6 ms a frame at 1080p, same quality.
+  NVENC `-delay 0` (no held frames), AMF `-latency 1 -async_depth 1` (no 16-frame queue).
+- Rate buffer: wired a quarter second (keeps text sharp, an I-frame burst is ~8 ms there); Wi-Fi 8 frames plus an
+  I-frame cap (`-max_frame_size_i`), so a key frame no longer lands as one burst every 0.5 s.
+- Player `SDL_RENDER_VSYNC=0`: a frame shows at once instead of waiting for the next refresh.
+- SRT Wi-Fi latency 150 -> 100 ms, now that Wi-Fi is kept steady while linked.
+- Encoder probe encodes 40 frames with `-g 30`: some drivers fail only at the first key-frame boundary.
+- Live check on the server (Intel): the exact Wi-Fi and wired QSV lines capture+encode 180 frames at 61 fps, exit 0.
+- Not yet (1-week set): virtual screens sized 1:1 to the monitor that shows them, bitrate from the slower end's
+  link, adaptive tiers, SRT 80 ms.

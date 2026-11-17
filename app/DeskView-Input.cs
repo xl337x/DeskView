@@ -1101,7 +1101,8 @@ public class DeskViewForwarder
                     if (queue.TryTake(out msg, slowQueue.IsEmpty ? 100 : 0)) { batch.Add(msg); while (batch.Count < 1000 && queue.TryTake(out msg)) batch.Add(msg); }
                     int waited = batch.Count;
                     var send = DvMoves.Coalesce(batch);
-                    if (send.Count == 0 && slowQueue.TryDequeue(out msg)) send.Add(msg);   // the clipboard: only when no input waits
+                    bool slow = send.Count == 0 && slowQueue.TryDequeue(out msg);
+                    if (slow) send.Add(msg);   // the clipboard: only when no input waits
                     if (send.Count > 0)
                     {
                         // all of it in one write: one system call and mostly one packet instead of one per move
@@ -1109,7 +1110,7 @@ public class DeskViewForwarder
                         wire.SetLength(0);
                         foreach (var m in send) DvProto.WriteFrame(wire, keys, ++seq, m);
                         s.Write(wire.GetBuffer(), 0, (int)wire.Length);
-                        TxStats(waited, send.Count, DvMoves.NowUs() - w0);
+                        if (!slow) TxStats(waited, send.Count, DvMoves.NowUs() - w0);   // input only (the clipboard has its own lane)
                     }
                     // Every second while input goes over (5 s otherwise). An agent that leaves a ping unanswered for 4 s
                     // is gone (asleep, out of Wi-Fi): input comes back here instead of into nothing. Timed from the ping

@@ -97,8 +97,22 @@ namespace DeskView
         // round trips are ~1 ms (40 ms is plenty); Wi-Fi has bursts of loss and 5-20 ms round trips (150 ms - and it
         // adds that much delay: see docs/OPEN-ISSUES.md about trying less). Bitrates: enough for sharp text at
         // 1080p60 with a hardware encoder; Wi-Fi halved so the link keeps headroom. Both ends use the larger latency.
-        static readonly Dictionary<string, int> LatencyMs = new Dictionary<string, int> { { "Wired", 40 }, { "WiFi", 150 } };
-        static readonly Dictionary<string, int> BitrateMbps = new Dictionary<string, int> { { "Wired", 20 }, { "WiFi", 10 } };
+        // SRT holds every packet this long (time to resend a lost one). Wi-Fi 150 -> 100 ms now that Wi-Fi is kept steady
+        // while linked (no background scans, streaming mode: see Wifi.cs); the decode-error log shows if it is too low.
+        static readonly Dictionary<string, int> LatencyMs = new Dictionary<string, int> { { "Wired", 40 }, { "WiFi", 100 } };
+
+        /// <summary>Bits per second for one screen: by its size (a 1440p screen got the same bits as 1080p and its text
+        /// went soft) and by the network. Measured on scrolling text: 1440p at 12 Mbit/s SSIM 0.932, at 20 0.960.</summary>
+        static int BitrateMbps(string prof, Rectangle r)
+        {
+            long px = (long)r.Width * r.Height;
+            bool wifi = prof == "WiFi";
+            if (px <= 2100000) return wifi ? 15 : 20;      // up to 1080p
+            if (px <= 3700000) return wifi ? 25 : 35;      // up to 1440p
+            return wifi ? 40 : 60;                          // 4K
+        }
+
+        bool? qsvLowPower;   // the Intel encoder's fast mode (VDEnc): 8.2 -> 6.6 ms a frame at 1080p, same quality - if the driver has it
         string Profile { get { return S.Profile == "Auto" ? Tools.LinkType() : S.Profile; } }
 
         // ------------------------------------------------------------------------------------------------- encoders
@@ -106,7 +120,8 @@ namespace DeskView
         {
             try
             {
-                var p = Start(ffmpeg, "-hide_banner -loglevel error -f lavfi -i color=s=640x360:r=30 -frames:v 3 -pix_fmt nv12 -c:v " + enc + " -f null -", null);
+                // 40 frames: some drivers fail only at the first key-frame boundary (frame 30)
+                var p = Start(ffmpeg, "-hide_banner -loglevel error -f lavfi -i color=s=640x360:r=30 -frames:v 40 -pix_fmt nv12 -c:v " + enc + " -g 30 -f null -", null);
                 if (!p.WaitForExit(8000)) { try { p.Kill(); } catch { } return false; }   // a hung driver probe must not block
                 return p.ExitCode == 0;
             }
@@ -181,7 +196,15 @@ namespace DeskView
         void StartSender(int n, Screen screen, DeskViewDxgi.Output output, Sender st)
         {
             string prof = Profile, enc = Encoder();
-            int mbps = BitrateMbps[prof]; string b = mbps + "M", buf = (mbps * 500) + "k";
+            int mbps = BitrateMbps(prof, screen.Bounds); string b = mbps + "M";
+            // Rate buffer: wired a quarter second (an I-frame burst is ~8 ms there, and a bigger buffer keeps text sharp);
+            // Wi-Fi 8 frames with I-frames capped, so a key frame doesn't arrive as one 1 MB burst every 0.5 s (the hitch).
+            bool wifiLink = prof == "WiFi";
+            string buf = wifiLink ? (mbps * 1000 * 8 / 60) + "k" : (mbps * 250) + "k";
+            string iCap = wifiLink ? " -max_frame_size_i " + (mbps * 1000000 / 60 * 6 / 8) : "";
+            if (enc == "h264_qsv" && qsvLowPower == null) qsvLowPower = TestEncoder("h264_qsv -low_power 1");
+            string lowPower = enc == "h264_qsv" && qsvLowPower == true ? " -low_power 1" : "";
+            // -slices 4: the player decodes a frame on 4 threads instead of 1 (1440p: 10.4 -> 4.8 ms a frame, measured)
             // A viewer that joins (a monitor switched to this screen, smart screens, a reconnect) shows nothing until the
             // next key frame (the player drops what it reads before it knows the picture size): one every 0.5 s,
             // on any network, at a small bitrate cost.
@@ -189,11 +212,13 @@ namespace DeskView
             string encArgs;
             switch (enc)
             {
-                case "h264_nvenc": encArgs = "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
-                case "h264_qsv": encArgs = "-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
-                case "h264_amf": encArgs = "-c:v h264_amf -usage ultralowlatency -quality speed -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
+                // -delay 0: no finished frames held back (FFmpeg's default queues a few)
+                case "h264_nvenc": encArgs = "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -delay 0 -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0 -slices 4"; break;
+                case "h264_qsv": encArgs = "-c:v h264_qsv -preset veryfast" + lowPower + " -look_ahead 0 -async_depth 1 -b:v " + b + " -maxrate " + b + " -bufsize " + buf + iCap + " -g " + gop + " -bf 0 -slices 4"; break;
+                // -latency 1 -async_depth 1: no queue of 16 frames inside the encoder (its default)
+                case "h264_amf": encArgs = "-c:v h264_amf -usage ultralowlatency -quality speed -latency 1 -async_depth 1 -rc cbr -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0 -slices 4"; break;
                 case "h264_mf": encArgs = "-c:v h264_mf -hw_encoding 1 -scenario display_remoting -rate_control cbr -b:v " + b + " -g " + gop + " -bf 0"; break;
-                default: encArgs = "-c:v libx264 -preset ultrafast -tune zerolatency -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0"; break;
+                default: encArgs = "-c:v libx264 -preset ultrafast -tune zerolatency -b:v " + b + " -maxrate " + b + " -bufsize " + buf + " -g " + gop + " -bf 0 -slices 4"; break;
             }
             int port = S.VideoPort + n - 1;
             // pkt_size 1316 = 7 MPEG-TS packets: fits one UDP datagram without fragmenting on any normal network
@@ -330,7 +355,8 @@ namespace DeskView
             // a stream that stops sending (the other computer asleep, network gone) ends the player after 3 s instead of
             // leaving a frozen picture: the restart below takes over
             url += "&timeout=3000000";
-            var env = new Dictionary<string, string> { { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" } };
+            // SDL_RENDER_VSYNC=0: show a decoded frame at once instead of waiting for the next screen refresh (up to 16 ms)
+            var env = new Dictionary<string, string> { { "SDL_WINDOWS_DPI_AWARENESS", "permonitorv2" }, { "SDL_RENDER_VSYNC", "0" } };
             // Probe: 32 KB and no analysis - the picture size is known from the first key frame, and every byte probed
             // is time before the first picture. After two failed starts of a screen that never showed a picture, a
             // longer probe (a sender that starts slowly).
