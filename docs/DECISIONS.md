@@ -122,3 +122,19 @@ the code independently and one judge verifying each claim against the code (two 
   them null, so the input file still compiles alone. No protocol change ("L"/"X" already exist): works with old peers.
 - Every switch, give-back, refused edge and Ctrl+Alt+0 press is logged (with the state at that moment); the log has
   milliseconds now, is thread safe, and rolls to `deskview.log.1` at 2 MB instead of being deleted.
+
+## Mouse speed (council round 3, fixes 1-6)
+- Moves waiting to be sent are merged (`DvMoves.Coalesce`: R summed, newest M/MS kept, never across a click/key)
+  and a whole wake goes out in ONE write. After a Wi-Fi hiccup the pointer jumps to the hand instead of replaying.
+- The clipboard has its own lane on the forwarder (sent only when no input waits); the agent reads its clipboard
+  on a worker, never on the input thread (a program may take 400 ms to hand it over).
+- AES/HMAC objects are kept per thread and key: a frame costs ~12 us instead of ~140 us (measured, link.tests).
+- Input threads run at Highest priority; the process opts out of Windows power throttling (a tray app with no
+  window is otherwise run as background work on laptops).
+- Wi-Fi: media streaming mode on and background scans off while the computers are linked (`Core/Wifi.cs`,
+  wlanapi, per user, no admin, undone by Windows when the handle closes).
+- Measurement: every move carries the sender's steady-clock time (old agents read only the first numbers). The
+  receiver logs `mouse-rx` every 10 s (gap p50/p95/max) and `mouse-lag` when moves stop arriving > 50 ms while the
+  hand kept moving; the sender logs `mouse-tx` (merged count, queue depth, slowest write). Log writes from input
+  threads go through `Log.Later` (time taken at the call, file written on a worker).
+- Not done (per council): UDP for motion - only if logs show TCP stalls after these fixes.

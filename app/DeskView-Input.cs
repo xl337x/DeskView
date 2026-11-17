@@ -218,7 +218,27 @@ public static class DvProto
 
     public static byte[] Ascii(string s) { return Encoding.ASCII.GetBytes(s); }
 
-    public static byte[] Random(int n) { var b = new byte[n]; using (var r = RandomNumberGenerator.Create()) r.GetBytes(b); return b; }
+    static readonly RandomNumberGenerator rng = RandomNumberGenerator.Create();
+    public static byte[] Random(int n) { var b = new byte[n]; lock (rng) rng.GetBytes(b); return b; }
+
+    // One AES and one HMAC object per thread and key: creating them was ~85 of the ~140 us each frame cost (measured),
+    // on every mouse move on both computers. Not thread safe, hence per thread; the wire format is unchanged.
+    [ThreadStatic] static Aes tAes;
+    [ThreadStatic] static HMACSHA256 tMac;
+    [ThreadStatic] static byte[] tMacKey;
+    static Aes FrameAes()
+    {
+        if (tAes == null) { tAes = Aes.Create(); tAes.Mode = CipherMode.CBC; tAes.Padding = PaddingMode.PKCS7; }
+        return tAes;
+    }
+    static byte[] FrameMac(byte[] key, byte[] a, byte[] b, byte[] c)
+    {
+        if (tMac == null || !ReferenceEquals(tMacKey, key)) { if (tMac != null) tMac.Dispose(); tMac = new HMACSHA256(key); tMacKey = key; }
+        tMac.Initialize();
+        tMac.TransformBlock(a, 0, a.Length, null, 0); tMac.TransformBlock(b, 0, b.Length, null, 0); tMac.TransformBlock(c, 0, c.Length, null, 0);
+        tMac.TransformFinalBlock(new byte[0], 0, 0);
+        return tMac.Hash;
+    }
 
     public static bool SameBytes(byte[] a, byte[] b)
     {
@@ -260,13 +280,9 @@ public static class DvProto
     public static void WriteFrame(Stream s, byte[][] keys, ulong seq, string message)
     {
         byte[] iv = Random(16), ct;
-        using (var aes = Aes.Create())
-        {
-            aes.Key = keys[0]; aes.IV = iv; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
-            using (var enc = aes.CreateEncryptor()) { var pt = Encoding.UTF8.GetBytes(message); ct = enc.TransformFinalBlock(pt, 0, pt.Length); }
-        }
+        using (var enc = FrameAes().CreateEncryptor(keys[0], iv)) { var pt = Encoding.UTF8.GetBytes(message); ct = enc.TransformFinalBlock(pt, 0, pt.Length); }
         var seqBytes = BitConverter.GetBytes(seq);
-        var tag = Hmac(keys[1], seqBytes, iv, ct);
+        var tag = FrameMac(keys[1], seqBytes, iv, ct);
         int len = 8 + 16 + ct.Length + MacLen;
         var frame = new byte[2 + len];
         frame[0] = (byte)(len >> 8); frame[1] = (byte)len;
@@ -288,15 +304,56 @@ public static class DvProto
         var seqBytes = new byte[8]; var iv = new byte[16]; var ct = new byte[ctLen]; var tag = new byte[MacLen];
         Buffer.BlockCopy(body, 0, seqBytes, 0, 8); Buffer.BlockCopy(body, 8, iv, 0, 16);
         Buffer.BlockCopy(body, 24, ct, 0, ctLen); Buffer.BlockCopy(body, 24 + ctLen, tag, 0, MacLen);
-        if (!SameBytes(tag, Hmac(keys[1], seqBytes, iv, ct))) throw new InvalidDataException("bad frame MAC");
+        if (!SameBytes(tag, FrameMac(keys[1], seqBytes, iv, ct))) throw new InvalidDataException("bad frame MAC");
         ulong seq = BitConverter.ToUInt64(seqBytes, 0);
         if (seq <= lastSeq) throw new InvalidDataException("replayed frame");
         lastSeq = seq;
-        using (var aes = Aes.Create())
+        using (var dec = FrameAes().CreateDecryptor(keys[0], iv)) return Encoding.UTF8.GetString(dec.TransformFinalBlock(ct, 0, ct.Length));
+    }
+}
+
+/// <summary>Mouse moves on the way: merged while they wait, timestamped for the lag log.</summary>
+public static class DvMoves
+{
+    /// <summary>A steady clock in microseconds (never DateTime: it jumps). Only differences mean anything.</summary>
+    public static long NowUs() { return (long)(System.Diagnostics.Stopwatch.GetTimestamp() * (1000000.0 / System.Diagnostics.Stopwatch.Frequency)); }
+
+    /// <summary>Waiting messages, with runs of moves merged: relative moves ("R dx dy [t]") added up, absolute ones
+    /// ("M", "MS" on the same screen) - only the newest kept. Never across anything else, so a move before a click
+    /// stays before it. After a Wi-Fi hiccup the pointer jumps to where the hand is instead of replaying the past.</summary>
+    public static List<string> Coalesce(List<string> items)
+    {
+        var o = new List<string>(items.Count);
+        foreach (var m in items)
         {
-            aes.Key = keys[0]; aes.IV = iv; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
-            using (var dec = aes.CreateDecryptor()) return Encoding.UTF8.GetString(dec.TransformFinalBlock(ct, 0, ct.Length));
+            if (o.Count > 0)
+            {
+                var last = o[o.Count - 1];
+                if (m.StartsWith("R ") && last.StartsWith("R "))
+                {
+                    var a = last.Split(' '); var b = m.Split(' '); int ax, ay, bx, by;
+                    if (a.Length >= 3 && b.Length >= 3 && int.TryParse(a[1], out ax) && int.TryParse(a[2], out ay) && int.TryParse(b[1], out bx) && int.TryParse(b[2], out by))
+                    { o[o.Count - 1] = "R " + (ax + bx) + " " + (ay + by) + (b.Length > 3 ? " " + b[3] : ""); continue; }
+                }
+                else if (m.StartsWith("M ") && last.StartsWith("M ")) { o[o.Count - 1] = m; continue; }
+                else if (m.StartsWith("MS ") && last.StartsWith("MS "))
+                {
+                    var a = last.Split(' '); var b = m.Split(' ');
+                    if (a.Length > 1 && b.Length > 1 && a[1] == b[1]) { o[o.Count - 1] = m; continue; }
+                }
+            }
+            o.Add(m);
         }
+        return o;
+    }
+
+    /// <summary>p-th percentile (0..100) of the first n values (sorts them).</summary>
+    public static long Percentile(long[] v, int n, int p)
+    {
+        if (n <= 0) return 0;
+        Array.Sort(v, 0, n);
+        int i = (int)Math.Ceiling(n * p / 100.0) - 1;
+        return v[Math.Max(0, Math.Min(n - 1, i))];
     }
 }
 
@@ -338,6 +395,45 @@ public class DeskViewAgent
     long lastDrivenTicks;                        // when the other machine last moved, clicked or typed here
     /// <summary>Where the app's log goes (the app sets it; tests leave it null). Must not block: called on hook threads.</summary>
     public Action<string> Log;
+
+    // Mouse lag as felt here: the time between moves arriving while the hand on the other computer kept moving
+    // (its timestamps say so). A long gap with moves sent close together = held on the way (Wi-Fi, network).
+    readonly long[] rxGaps = new long[4096]; int rxN, rxLags, rxMoves; long rxLastT, rxLastAt, rxSince = DvMoves.NowUs(), rxMax, rxLastLagLog;
+    void RxMove(string[] p, int ti)
+    {
+        long now = DvMoves.NowUs(), t;
+        rxMoves++;
+        if (p.Length > ti && long.TryParse(p[ti], out t))
+        {
+            if (rxLastT != 0)
+            {
+                long span = t - rxLastT, gap = now - rxLastAt;
+                if (span >= 0 && span < 50000)                      // the hand was moving (sent < 50 ms apart)
+                {
+                    if (rxN < rxGaps.Length) rxGaps[rxN++] = gap;
+                    if (gap > rxMax) rxMax = gap;
+                    if (gap > 50000 && gap > span + 40000)
+                    {
+                        rxLags++;
+                        if (Log != null && now - rxLastLagLog > 1000000)
+                        {
+                            rxLastLagLog = now;
+                            Log(string.Format("mouse-lag: {0} ms without moves arriving while the hand kept moving ({1} mode; sent {2} ms apart - held on the way: Wi-Fi/network or the other computer's queue)",
+                                gap / 1000, p[0] == "R" ? "edge" : "picture", span / 1000));
+                        }
+                    }
+                }
+            }
+            rxLastT = t; rxLastAt = now;
+        }
+        if (now - rxSince >= 10000000)
+        {
+            if (Log != null && rxN > 20)
+                Log(string.Format("mouse-rx (10 s, {0} mode): {1} moves; gap between moves p50 {2:0.0} ms, p95 {3:0.0} ms, max {4:0.0} ms; lag events (> 50 ms) {5}",
+                    p[0] == "R" ? "edge" : "picture", rxMoves, DvMoves.Percentile(rxGaps, rxN, 50) / 1000.0, DvMoves.Percentile(rxGaps, rxN, 95) / 1000.0, rxMax / 1000.0, rxLags));
+            rxSince = now; rxN = rxLags = rxMoves = 0; rxMax = 0;
+        }
+    }
 
     /// <summary>The other machine's pointer and keyboard are here right now (it came over the edge).</summary>
     public bool DrivenNow { get { return edgeIn != null; } }
@@ -410,7 +506,7 @@ public class DeskViewAgent
             TcpClient c;
             try { c = listener.AcceptTcpClient(); } catch { if (stopping) return; Thread.Sleep(200); continue; }
             // Each connection on its own thread, so a slow or hostile peer can't hold the door shut.
-            var t = new Thread(() => Serve(c)) { IsBackground = true, Name = "DeskViewAgentSession" };
+            var t = new Thread(() => Serve(c)) { IsBackground = true, Name = "DeskViewAgentSession", Priority = ThreadPriority.Highest };   // input waits for no one
             t.Start();
         }
     }
@@ -618,7 +714,8 @@ public class DeskViewAgent
         edgeIn = null;
         Interlocked.Increment(ref Switches);
         Send("L " + along);           // the pointer goes back at once; the clipboard follows
-        SendClipboardIfChanged();
+        // read on a worker: a program can take up to 400 ms to hand over its clipboard, and this thread reads input
+        ThreadPool.QueueUserWorkItem(delegate { SendClipboardIfChanged(); });
     }
 
     void SendClipboardIfChanged()
@@ -641,6 +738,7 @@ public class DeskViewAgent
                 case "E": case "R": case "M": case "MS": case "B": case "K": case "W": case "H":
                     Interlocked.Exchange(ref lastDrivenTicks, DateTime.Now.Ticks); break;
             }
+            if (p[0] == "R" || p[0] == "M" || p[0] == "MS") RxMove(p, p[0] == "MS" ? 4 : 3);
             switch (p[0])
             {
                 case "E": lock (driveLock) Enter(p[1], int.Parse(p[2])); if (Log != null) Log("input: the other computer's pointer came here (" + p[1] + " edge)"); break;
@@ -698,7 +796,7 @@ public class DeskViewAgent
                 case "U": ReleaseAll(); break;                         // the viewer stopped sending input: let go of everything
                 case "RS": { int n; if (p.Length > 1 && int.TryParse(p[1], out n) && n >= 1 && n <= 10) SenderRestarts.Enqueue(n); break; }
                 case "SR": if (p.Length > 1 && DvProto.IsScreenList(p[1])) RemoteScreenList = p[1]; break;
-                case "CQ": SendClipboardIfChanged(); break;            // the viewer's keyboard came back to it: our clipboard goes along
+                case "CQ": ThreadPool.QueueUserWorkItem(delegate { SendClipboardIfChanged(); }); break;   // the viewer's keyboard came back to it: our clipboard goes along (read off this input thread)
                 case "P": Send("P"); break;                            // keep-alive, answered so a dead link is noticed
             }
         }
@@ -847,10 +945,10 @@ public class DeskViewForwarder
     {
         if (hookThread != null) return;
         stopping = false;
-        hookThread = new Thread(HookLoop) { IsBackground = true, Name = "DeskViewForwarderHooks" };
+        hookThread = new Thread(HookLoop) { IsBackground = true, Name = "DeskViewForwarderHooks", Priority = ThreadPriority.Highest };
         hookThread.SetApartmentState(ApartmentState.STA);
         hookThread.Start();
-        netThread = new Thread(NetLoop) { IsBackground = true, Name = "DeskViewForwarderNet" };
+        netThread = new Thread(NetLoop) { IsBackground = true, Name = "DeskViewForwarderNet", Priority = ThreadPriority.Highest };
         netThread.Start();
     }
 
@@ -861,9 +959,17 @@ public class DeskViewForwarder
 
     void Enqueue(string s) { Enqueue(s, false); }
 
+    // The clipboard (up to 3 MB) waits in its own lane and goes only when no input is waiting: it must never sit
+    // in front of the next mouse moves right after crossing over.
+    readonly ConcurrentQueue<string> slowQueue = new ConcurrentQueue<string>();
+    void EnqueueSlow(string s) { if (Connected) slowQueue.Enqueue(s); }
+
     void Enqueue(string s, bool force)
     {
         if (!Connected) return;
+        // moves carry when they happened (this computer's steady clock): the other computer logs lag from them
+        // (agents only read the first numbers, so older ones ignore it)
+        if (s.StartsWith("R ") || s.StartsWith("M ") || s.StartsWith("MS ")) s = s + " " + DvMoves.NowUs();
         // a stalled link: drop pointer moves (newer ones follow), never presses, releases or keys - nor the move that
         // places a press (force)
         if (!force && queue.Count > 2000 && (s.StartsWith("M ") || s.StartsWith("R ") || s.StartsWith("MS "))) return;
@@ -934,6 +1040,24 @@ public class DeskViewForwarder
         DvNative.UnhookWindowsHookEx(mouseHook); DvNative.UnhookWindowsHookEx(keyHook);
     }
 
+    readonly List<string> batch = new List<string>();
+    readonly MemoryStream wire = new MemoryStream();
+    // what went out in the last 10 s (the lag log of this side)
+    long txSince = DvMoves.NowUs(); int txMsgs, txFrames, txWrites, txQueueMax; long txWriteMax;
+    void TxStats(int waited, int frames, long writeUs)
+    {
+        txMsgs += waited; txFrames += frames; txWrites++; if (waited > txQueueMax) txQueueMax = waited; if (writeUs > txWriteMax) txWriteMax = writeUs;
+        long now = DvMoves.NowUs();
+        if (now - txSince < 10000000) return;
+        if (Log != null && txMsgs > 50)
+        {
+            string line = string.Format("mouse-tx (10 s): {0} messages sent as {1} ({2} merged away) in {3} writes; most waiting at once {4}; slowest write {5:0.0} ms{6}",
+                txMsgs, txFrames, txMsgs - txFrames, txWrites, txQueueMax, txWriteMax / 1000.0, txWriteMax > 50000 || txQueueMax > 100 ? "  <- THIS computer or its network held the input back" : "");
+            var log = Log; ThreadPool.QueueUserWorkItem(delegate { log(line); });
+        }
+        txSince = now; txMsgs = txFrames = txWrites = txQueueMax = 0; txWriteMax = 0;
+    }
+
     void NetLoop()
     {
         while (!stopping)
@@ -950,7 +1074,7 @@ public class DeskViewForwarder
                 var s = c.GetStream();
                 var keys = DvProto.ClientHandshake(s, Code);
                 if (keys == null) { Status = "pairing code rejected by " + Peer + " (or it could not prove the code)"; Thread.Sleep(15000); continue; }
-                string drained; while (queue.TryTake(out drained)) { }
+                string drained; while (queue.TryTake(out drained)) { } while (slowQueue.TryDequeue(out drained)) { }
                 ulong seq = 0;
                 Connected = true; Status = "connected to " + Peer + " (encrypted)";
                 if (!string.IsNullOrEmpty(Name)) DvProto.WriteFrame(s, keys, ++seq, "N " + Name.Replace(' ', '_'));   // who we are
@@ -964,7 +1088,7 @@ public class DeskViewForwarder
                     try { while (!stopping) OnAgentMessage(DvProto.ReadFrame(s, keys, ref rseq, DvProto.MaxFileFrame)); }
                     catch { }
                     readerDead = true;
-                }) { IsBackground = true, Name = "DeskViewForwarderRead" };
+                }) { IsBackground = true, Name = "DeskViewForwarderRead", Priority = ThreadPriority.Highest };
                 c.ReceiveTimeout = 0;                              // the agent may stay quiet for a long time
                 reader.Start();
                 DateTime lastPing = DateTime.Now, pingSentAt = DateTime.MaxValue;   // pingSentAt: oldest ping not answered yet
@@ -973,7 +1097,20 @@ public class DeskViewForwarder
                     // A closed link is noticed within 100 ms, so input goes back to this machine instead of into it.
                     if (readerDead) throw new IOException("the other machine closed the link");
                     string msg;
-                    if (queue.TryTake(out msg, 100)) { DvProto.WriteFrame(s, keys, ++seq, msg); while (queue.TryTake(out msg)) DvProto.WriteFrame(s, keys, ++seq, msg); }
+                    batch.Clear();
+                    if (queue.TryTake(out msg, slowQueue.IsEmpty ? 100 : 0)) { batch.Add(msg); while (batch.Count < 1000 && queue.TryTake(out msg)) batch.Add(msg); }
+                    int waited = batch.Count;
+                    var send = DvMoves.Coalesce(batch);
+                    if (send.Count == 0 && slowQueue.TryDequeue(out msg)) send.Add(msg);   // the clipboard: only when no input waits
+                    if (send.Count > 0)
+                    {
+                        // all of it in one write: one system call and mostly one packet instead of one per move
+                        long w0 = DvMoves.NowUs();
+                        wire.SetLength(0);
+                        foreach (var m in send) DvProto.WriteFrame(wire, keys, ++seq, m);
+                        s.Write(wire.GetBuffer(), 0, (int)wire.Length);
+                        TxStats(waited, send.Count, DvMoves.NowUs() - w0);
+                    }
                     // Every second while input goes over (5 s otherwise). An agent that leaves a ping unanswered for 4 s
                     // is gone (asleep, out of Wi-Fi): input comes back here instead of into nothing. Timed from the ping
                     // (after it was written), so a quiet idle link or a long clipboard write never counts against it.
@@ -1239,7 +1376,7 @@ public class DeskViewForwarder
         {
             if (string.IsNullOrEmpty(text) || text == lastClip || Encoding.UTF8.GetByteCount(text) > MaxClipboardBytes) return;
             lastClip = text;
-            foreach (var f in DvClip.Frames(text, "")) Enqueue(f);
+            foreach (var f in DvClip.Frames(text, "")) EnqueueSlow(f);
         }
     }
 

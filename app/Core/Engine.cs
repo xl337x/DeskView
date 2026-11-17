@@ -121,7 +121,7 @@ namespace DeskView
             forwarder.DrivenByOther = () => agent.DrivenNow;
             forwarder.DrivenRecently = () => agent.DrivenRecently;
             forwarder.ClaimLocal = agent.GiveBack;
-            forwarder.Log = agent.Log = Log.Write;
+            forwarder.Log = agent.Log = Log.Later;   // never waits on a file: called from the input threads
             forwarder.Start();
             if (S.Role == Role.Client) S.ClientView = 0;      // start on this computer's own screen
             ApplyPointer();
@@ -706,6 +706,9 @@ namespace DeskView
                 if ((DateTime.Now - lastSlow).TotalSeconds >= 2)
                 {
                     lastSlow = DateTime.Now;
+                    // steady Wi-Fi while the computers are linked (no scans, no power saving), normal again when not
+                    var wifi = forwarder.Connected || !string.IsNullOrEmpty(agent.Client) ? Wifi.Steady() : Wifi.Normal();
+                    if (wifi != null) Log.Write(wifi);
                     var sig = LayoutSignature();
                     if (sig != layoutSig)
                     {
@@ -759,14 +762,19 @@ namespace DeskView
         /// <summary>One line, with milliseconds (lags and switches are judged in ms). Safe from any thread. At 2 MB the
         /// log moves to deskview.log.1 (the one before is dropped) instead of being deleted: the history that explains
         /// a problem stays.</summary>
-        public static void Write(string line)
+        public static void Write(string line) { WriteAt(DateTime.Now, line); }
+
+        /// <summary>For threads that must never wait (input): the time is taken now, the file is written on a worker.</summary>
+        public static void Later(string line) { var t = DateTime.Now; System.Threading.ThreadPool.QueueUserWorkItem(delegate { WriteAt(t, line); }); }
+
+        static void WriteAt(DateTime when, string line)
         {
             lock (writeLock)
             {
                 try
                 {
                     Directory.CreateDirectory(AppSettings.Dir);
-                    File.AppendAllText(Path, string.Format("[{0:yyyy-MM-ddTHH:mm:ss.fff}] {1}\r\n", DateTime.Now, line));
+                    File.AppendAllText(Path, string.Format("[{0:yyyy-MM-ddTHH:mm:ss.fff}] {1}\r\n", when, line));
                     var fi = new FileInfo(Path);
                     if (fi.Length > 2000000) { var old = Path + ".1"; if (File.Exists(old)) File.Delete(old); File.Move(Path, old); }
                 }

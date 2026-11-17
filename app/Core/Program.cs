@@ -13,6 +13,22 @@ namespace DeskView
     public static class Program
     {
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] static extern bool SetProcessInformation(IntPtr process, int infoClass, int[] info, int size);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+
+        /// <summary>DeskView lives in the tray without a visible window, so on a laptop Windows treats it as background
+        /// work and runs it slowly ("power throttling" / efficiency cores) - every mouse move then waits. Opt out (no
+        /// admin needed; Windows 10 1709+, ignored before).</summary>
+        static string NoThrottling()
+        {
+            try
+            {
+                // PROCESS_POWER_THROTTLING_STATE { Version = 1, ControlMask = EXECUTION_SPEED, StateMask = 0 (= not throttled) }
+                bool ok = SetProcessInformation(GetCurrentProcess(), 4, new[] { 1, 1, 0 }, 12);
+                return ok ? "power: not throttled (input runs at full speed on battery too)" : "power: throttling opt-out refused (" + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + ")";
+            }
+            catch (Exception e) { return "power: " + e.Message; }
+        }
 
         /// <summary>The app folder (DeskView.ps1 sets DESKVIEW_APPDIR before calling Main).</summary>
         public static string AppDir
@@ -41,6 +57,7 @@ namespace DeskView
                 }
                 // 1:1 pixels on scaled monitors (the old .exe had this in its manifest; powershell.exe has none)
                 try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
+                Log.Write(NoThrottling());
                 Application.EnableVisualStyles();
                 try { Application.SetCompatibleTextRenderingDefault(false); } catch (InvalidOperationException) { }   // PowerShell may have made a window already
                 Application.ThreadException += (o, e) => { Log.Write("error: " + e.Exception); MessageBox.Show("DeskView hit a problem: " + e.Exception.Message, "DeskView"); };

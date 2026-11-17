@@ -23,6 +23,21 @@ $script:pass = 0; $script:fail = 0
 function Check($name, [bool]$ok, $detail = '') { if ($ok) { $script:pass++ } else { $script:fail++ }; "{0}  {1}  {2}" -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $name, $detail }
 function WaitFor([scriptblock]$cond, $ms = 3000) { $end = (Get-Date).AddMilliseconds($ms); while ((Get-Date) -lt $end) { if (& $cond) { return $true }; Start-Sleep -Milliseconds 20 }; $false }
 
+# ------------------------------------------------------------------------------------- mouse speed
+# waiting moves are merged (after a Wi-Fi hiccup the pointer jumps to where the hand is, no replay), never across a
+# click or a key, so a move before a press stays before it
+$in = New-Object 'System.Collections.Generic.List[string]'
+'R 1 2 100', 'R 3 4 200', 'B 0 1', 'R 5 6 300', 'K 65 30 0 1', 'M 1 1 400', 'M 2 2 500', 'MS 1 1 1 600', 'MS 1 2 2 700', 'MS 2 3 3 800', 'R 7 8' | % { $in.Add($_) }
+$out = @([DvMoves]::Coalesce($in))
+Check 'waiting moves merge, never across a click or key' (($out -join '|') -eq 'R 4 6 200|B 0 1|R 5 6 300|K 65 30 0 1|M 2 2 500|MS 1 2 2 700|MS 2 3 3 800|R 7 8') ($out -join '|')
+# one frame costs microseconds now (the cipher objects are kept; creating them per frame was ~140 us)
+$kk = [DvProto]::SessionKeys([DvProto]::PairKey('LINKTEST2345'), [DvProto]::Random(16), [DvProto]::Random(16))
+$ms = New-Object IO.MemoryStream; for ($i = 1; $i -le 200; $i++) { [DvProto]::WriteFrame($ms, $kk, [uint64]$i, 'R 1 1 12345') }
+$sw = [Diagnostics.Stopwatch]::StartNew(); for ($i = 201; $i -le 5200; $i++) { [DvProto]::WriteFrame($ms, $kk, [uint64]$i, 'R 1 1 12345') }; $sw.Stop()
+$ms.Position = 0; $last = [uint64]0; $okRead = $true; for ($i = 0; $i -lt 5200; $i++) { if (-not ([DvProto]::ReadFrame($ms, $kk, [ref]$last) -eq 'R 1 1 12345')) { $okRead = $false } }
+$usPer = $sw.Elapsed.TotalMilliseconds * 1000 / 5000
+Check "a mouse frame is sealed in microseconds ($([math]::Round($usPer, 1)) us incl. PowerShell overhead) and every one reads back" ($okRead -and $usPer -lt 100)
+
 $code = 'LINKTEST2345'; $port = 9106
 $io = New-Object FakeIO
 $agent = New-Object DeskViewAgent; $agent.Port = $port; $agent.Code = $code; $io.Wire($agent)
