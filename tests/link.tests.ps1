@@ -64,6 +64,17 @@ try {
     Send 'X'; Send 'R 0 -50'; Start-Sleep -Milliseconds 150
     Check '"X" (taken back with Ctrl+Alt+0) stops driving the pointer' ($io.Y -eq 1)
 
+    # the person at this computer wins: its own input while the other machine drives it sends the pointer back
+    while ($s.DataAvailable) { [void](Recv) }
+    Check 'not driven: nothing to give back' (-not $agent.GiveBack() -and -not $agent.DrivenNow)
+    Send 'E right 32768'; [void](WaitFor { $agent.DrivenNow })
+    Check 'driven after the other machine came over' ($agent.DrivenNow -and $agent.DrivenRecently)
+    $gave = $agent.GiveBack(); $back = Recv
+    Check 'local input wins: control goes back to the other machine at once ("L")' ($gave -and $back -like '<L *' -and -not $agent.DrivenNow) "$gave $back"
+    Check 'just after: still "recently driven" (this computer''s edge must not cross the other way)' ($agent.DrivenRecently)
+    Send 'R 10 10'; Start-Sleep -Milliseconds 1700
+    Check '1.5 s after the last input from the other machine: free again' (-not $agent.DrivenRecently)
+
     $big = 'x' * 1000000 + ' end'
     foreach ($f in [DvClip]::Frames($big, '')) { Send $f }
     Check 'a 1 MB clipboard text arrives (chunked frames)' (WaitFor { $agent.LastClipboardIn -eq $big }) "$($agent.LastClipboardIn.Length) chars"
@@ -121,6 +132,10 @@ try {
     Check 'forwarder connects (encrypted)' (WaitFor { $fw.Connected } 8000) $fw.Status
     Check 'each side tells the other its computer name over the link' (WaitFor { $agent.PeerName -eq ($env:COMPUTERNAME -replace '[^\w\-.]', '') }) "agent heard '$($agent.PeerName)'"
     Check 'no switch away from the edge' (-not $fw.TryEnter(1000, 500))
+    # never crossed: while this computer is (or just was) driven by the other one, its own edge does nothing
+    $fw.DrivenRecently = [Func[bool]] { $true }
+    Check 'no crossed control: the edge does nothing while this computer is being driven' (-not $fw.TryEnter(1919, 300) -and -not $fw.RemoteOwned)
+    $fw.DrivenRecently = $null
     $sw = $agent.Switches
     Check 'touching the right edge switches to the other machine' ($fw.TryEnter(1919, 300) -and $fw.RemoteOwned)
     Check 'the other machine gets the pointer at the matching height' (WaitFor { $agent.Switches -gt $sw -and $io.X -eq 1 }) "$($io.X),$($io.Y)"

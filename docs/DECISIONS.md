@@ -109,3 +109,16 @@ the code independently and one judge verifying each claim against the code (two 
   lines of an old run are dropped. The file is opened per line (few lines with -nostats) so it can be read, deleted
   and recreated at any time.
 - Owner action after updating: change the pairing code on both PCs (old reports may have been copied elsewhere).
+
+## The person at the computer wins; never crossed control (R1, first part)
+- Seen live: both PCs typed on each other, and a laptop's touchpad moved the other PC. Cause: each PC's forwarder
+  decided alone, and the pointer the other PC hands back rests on this PC's own switching edge - one touch crossed.
+- Rule 1, local wins: a real mouse/touchpad/keyboard event on a PC that the other PC drives (agent `edgeIn` set) gives
+  the pointer back at once (`DeskViewAgent.GiveBack` -> "<L"). A click, wheel or key wins at once; moves need 3
+  within 250 ms (a jittering mouse must not take control). If that PC was also driving the other one (crossed), that
+  stops too ("X").
+- Rule 2, never both ways: `TryEnter` does nothing while this PC is driven or was in the last 1.5 s.
+- Wired in Engine (forwarder.DrivenByOther / DrivenRecently / ClaimLocal); tests and the standalone compile leave
+  them null, so the input file still compiles alone. No protocol change ("L"/"X" already exist): works with old peers.
+- Every switch, give-back, refused edge and Ctrl+Alt+0 press is logged (with the state at that moment); the log has
+  milliseconds now, is thread safe, and rolls to `deskview.log.1` at 2 MB instead of being deleted.

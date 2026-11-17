@@ -116,6 +116,12 @@ namespace DeskView
             forwarder.CountInjected = Environment.GetEnvironmentVariable("DESKVIEW_QA_INPUT") == "1";   // live QA with synthetic input
             if (S.Role == Role.Client) forwarder.Peer = Peer() ?? "";
             ApplyBuiltin();
+            // The two halves of this computer: the person sitting here always wins over the other computer, and this
+            // computer never drives the other one while it is being driven (no crossed control). Both log what they do.
+            forwarder.DrivenByOther = () => agent.DrivenNow;
+            forwarder.DrivenRecently = () => agent.DrivenRecently;
+            forwarder.ClaimLocal = agent.GiveBack;
+            forwarder.Log = agent.Log = Log.Write;
             forwarder.Start();
             if (S.Role == Role.Client) S.ClientView = 0;      // start on this computer's own screen
             ApplyPointer();
@@ -716,15 +722,23 @@ namespace DeskView
     public static class Log
     {
         public static string Path { get { return System.IO.Path.Combine(AppSettings.Dir, "deskview.log"); } }
+        static readonly object writeLock = new object();
+        /// <summary>One line, with milliseconds (lags and switches are judged in ms). Safe from any thread. At 2 MB the
+        /// log moves to deskview.log.1 (the one before is dropped) instead of being deleted: the history that explains
+        /// a problem stays.</summary>
         public static void Write(string line)
         {
-            try
+            lock (writeLock)
             {
-                Directory.CreateDirectory(AppSettings.Dir);
-                File.AppendAllText(Path, string.Format("[{0:yyyy-MM-ddTHH:mm:ss}] {1}\r\n", DateTime.Now, line));
-                var fi = new FileInfo(Path); if (fi.Length > 2000000) File.Delete(Path);
+                try
+                {
+                    Directory.CreateDirectory(AppSettings.Dir);
+                    File.AppendAllText(Path, string.Format("[{0:yyyy-MM-ddTHH:mm:ss.fff}] {1}\r\n", DateTime.Now, line));
+                    var fi = new FileInfo(Path);
+                    if (fi.Length > 2000000) { var old = Path + ".1"; if (File.Exists(old)) File.Delete(old); File.Move(Path, old); }
+                }
+                catch { }
             }
-            catch { }
         }
     }
 }

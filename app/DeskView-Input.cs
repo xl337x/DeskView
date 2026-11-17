@@ -333,7 +333,32 @@ public class DeskViewAgent
     /// <summary>Tells the other computer where this computer's shared screens are and how big.</summary>
     public void ReportScreens(string list) { Send("SR " + list); }
 
-    string edgeIn;                               // side the pointer came in from while the other machine drives it (null = not)
+    volatile string edgeIn;                      // side the pointer came in from while the other machine drives it (null = not)
+    readonly object driveLock = new object();    // edgeIn changes on the link thread and (GiveBack) from this computer's hooks
+    long lastDrivenTicks;                        // when the other machine last moved, clicked or typed here
+    /// <summary>Where the app's log goes (the app sets it; tests leave it null). Must not block: called on hook threads.</summary>
+    public Action<string> Log;
+
+    /// <summary>The other machine's pointer and keyboard are here right now (it came over the edge).</summary>
+    public bool DrivenNow { get { return edgeIn != null; } }
+    /// <summary>Driven now or in the last 1.5 s: this computer's own edge must not send its pointer away meanwhile
+    /// (the pointer the other machine left here rests on that edge - one touch would cross the other way).</summary>
+    public bool DrivenRecently { get { return edgeIn != null || DateTime.Now.Ticks - Interlocked.Read(ref lastDrivenTicks) < TimeSpan.TicksPerMillisecond * 1500; } }
+
+    /// <summary>Someone used this computer's own mouse, touchpad or keyboard while the other machine drove it: the
+    /// person sitting here wins - the pointer and keyboard go back to the other machine at once.</summary>
+    public bool GiveBack()
+    {
+        lock (driveLock)
+        {
+            var side = edgeIn;
+            if (side == null) return false;
+            var d = GetDesktop(); var cur = GetCursor();
+            Leave(DvEdge.Along(side, cur.X, cur.Y, d));
+            Interlocked.Exchange(ref lastDrivenTicks, DateTime.Now.Ticks);
+            return true;
+        }
+    }
     string lastClip;                             // last text synced either way: never echo it back
     StringBuilder clipIn;
     Stream sessionStream; byte[][] sessionKeys; ulong sendSeq;
@@ -578,7 +603,7 @@ public class DeskViewAgent
         int nx = cur.X + dx, ny = cur.Y + dy;
         bool buttonHeld; lock (heldButtons) buttonHeld = heldButtons.Count > 0;
         // Back across the side it came in from (not while dragging: the drag stays on this machine).
-        if (DvEdge.Beyond(edgeIn, nx, ny, d) && !buttonHeld) { SetCursor(Math.Max(d.Left, Math.Min(d.Right - 1, nx)), Math.Max(d.Top, Math.Min(d.Bottom - 1, ny))); Leave(DvEdge.Along(edgeIn, nx, ny, d)); return; }   // rests on the edge it left by
+        if (DvEdge.Beyond(edgeIn, nx, ny, d) && !buttonHeld) { SetCursor(Math.Max(d.Left, Math.Min(d.Right - 1, nx)), Math.Max(d.Top, Math.Min(d.Bottom - 1, ny))); Leave(DvEdge.Along(edgeIn, nx, ny, d)); if (Log != null) Log("input: the other computer's pointer went back over the edge"); return; }   // rests on the edge it left by
         SetCursor(Math.Max(d.Left, Math.Min(d.Right - 1, nx)), Math.Max(d.Top, Math.Min(d.Bottom - 1, ny)));
         Interlocked.Increment(ref Moves);
     }
@@ -609,9 +634,14 @@ public class DeskViewAgent
         {
             switch (p[0])
             {
-                case "E": Enter(p[1], int.Parse(p[2])); break;
-                case "R": MoveBy(int.Parse(p[1]), int.Parse(p[2])); break;
-                case "X": if (edgeIn != null) { edgeIn = null; ReleaseAll(); } break;   // the other machine took its pointer back
+                case "E": case "R": case "M": case "MS": case "B": case "K": case "W": case "H":
+                    Interlocked.Exchange(ref lastDrivenTicks, DateTime.Now.Ticks); break;
+            }
+            switch (p[0])
+            {
+                case "E": lock (driveLock) Enter(p[1], int.Parse(p[2])); if (Log != null) Log("input: the other computer's pointer came here (" + p[1] + " edge)"); break;
+                case "R": lock (driveLock) MoveBy(int.Parse(p[1]), int.Parse(p[2])); break;
+                case "X": lock (driveLock) { if (edgeIn != null) { edgeIn = null; ReleaseAll(); if (Log != null) Log("input: the other computer took its pointer back (its Ctrl+Alt+0)"); } } break;
                 case "N": if (p.Length > 1) PeerName = System.Text.RegularExpressions.Regex.Replace(p[1], @"[^\w\-.]", ""); break;
                 case "Q": { int c; if (p.Length > 1 && int.TryParse(p[1], out c) && c >= 1 && c <= 10) ScreenCount = c; break; }
                 case "O": OccupiedScreens = p.Length > 1 && System.Text.RegularExpressions.Regex.IsMatch(p[1], @"^[0-9,]{0,40}$") ? p[1] : ""; break;
@@ -743,6 +773,44 @@ public class DeskViewForwarder
     // "" = off) and it continues on the other machine, with the keyboard; it comes back the same way.
     public volatile string Edge = "";
     public volatile bool RemoteOwned;                     // the pointer and keyboard are on the other machine now
+    // This computer's other half (its agent), set by the app; tests leave them null (no change in behaviour).
+    /// <summary>The other machine drives this computer right now.</summary>
+    public Func<bool> DrivenByOther;
+    /// <summary>... or did in the last moment: this computer's edge must not send its pointer away.</summary>
+    public Func<bool> DrivenRecently;
+    /// <summary>Gives the other machine's pointer back to it (the person here touched this computer's input).</summary>
+    public Func<bool> ClaimLocal;
+    /// <summary>Where the app's log goes. Must not block: called on hook threads.</summary>
+    public Action<string> Log;
+    long lastClaimTicks, lastEdgeRefusedLog, firstLocalMoveTicks; int localMoves;
+
+    /// <summary>A real input event on this computer (not one the agent replayed). While the other machine drives
+    /// this computer, the person sitting here wins: its pointer is sent back, and if this computer was also driving
+    /// the other one (both crossed), that stops too - everything is local again. Never blocks the hook.</summary>
+    bool LocalInputWins(bool strong)
+    {
+        if (DrivenByOther == null || ClaimLocal == null || !DrivenByOther()) { localMoves = 0; return false; }
+        long now = DateTime.Now.Ticks;
+        if (!strong)
+        {
+            // a mouse that only jitters must not take control: 3 moves within 250 ms do
+            if (now - firstLocalMoveTicks > TimeSpan.TicksPerMillisecond * 250) { firstLocalMoveTicks = now; localMoves = 0; }
+            if (++localMoves < 3) return false;
+        }
+        if (now - Interlocked.Read(ref lastClaimTicks) < TimeSpan.TicksPerMillisecond * 300) return true;
+        Interlocked.Exchange(ref lastClaimTicks, now);
+        localMoves = 0;
+        bool crossed = RemoteOwned;
+        if (crossed) { Enqueue("X"); ComeBack(32768); }
+        var claim = ClaimLocal; var log = Log;
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            bool gave = false; try { gave = claim(); } catch { }
+            if (log != null) log("input: this computer's own " + (strong ? "keyboard/button" : "mouse/touchpad") + " was used while the other computer drove it - control is back here"
+                + (gave ? "" : " (it had already left)") + (crossed ? "; both computers were driving each other (crossed) - stopped" : ""));
+        });
+        return true;
+    }
     public volatile bool ShareClipboard = true;
     public int MaxClipboardBytes = 3 * 1024 * 1024;
     public int Switches;                                  // times the pointer went over / came back (tests)
@@ -919,7 +987,7 @@ public class DeskViewForwarder
             finally
             {
                 Connected = false; if (c != null) try { c.Close(); } catch { }
-                if (RemoteOwned) ComeBack(32768);                 // link lost: the pointer returns to this machine
+                if (RemoteOwned) { ComeBack(32768); if (Log != null) { var log = Log; ThreadPool.QueueUserWorkItem(delegate { log("input: link to the other computer lost while driving it - pointer back here"); }); } }   // link lost: the pointer returns to this machine
             }
             if (!stopping) Thread.Sleep(1000);
         }
@@ -964,6 +1032,13 @@ public class DeskViewForwarder
         IntPtr prev = DvNative.SetThreadDpiAwarenessContext(DvNative.PerMonitorV2);
         try
         {
+            if (code >= 0 && DrivenByOther != null)
+            {
+                var lm = (DvNative.MSLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(DvNative.MSLLHOOKSTRUCT));
+                bool linj = (lm.flags & 0x1) != 0;
+                if ((!linj || AcceptInjected || CountInjected) && lm.extra != DvNative.AgentMarker)
+                    LocalInputWins((int)w != 0x0200);              // a click or wheel wins at once, moves after a few
+            }
             if (code >= 0 && Connected && (RemoteOwned || (Edge != "" && (int)w == 0x0200)))
             {
                 var m = (DvNative.MSLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(DvNative.MSLLHOOKSTRUCT));
@@ -1038,6 +1113,14 @@ public class DeskViewForwarder
         if (RemoteOwned || !Connected || Edge == "") return false;
         var d = GetDesktop();
         if (!DvEdge.AtEdge(Edge, x, y, d)) return false;
+        // Never both ways at once: while (or just after) the other machine drives this computer, this computer's
+        // own edge does nothing - otherwise both computers end up typing on each other.
+        if (DrivenRecently != null && DrivenRecently())
+        {
+            long now = DateTime.Now.Ticks;
+            if (Log != null && now - lastEdgeRefusedLog > TimeSpan.TicksPerSecond * 5) { lastEdgeRefusedLog = now; var log = Log; ThreadPool.QueueUserWorkItem(delegate { log("input: edge touched while the other computer drives this one - not switching (no crossed control)"); }); }
+            return false;
+        }
         // Not while a button is held: dragging a window to the edge must not throw it to the other machine.
         if (!AcceptInjected && (Held(0x01) || Held(0x02) || Held(0x04))) return false;
         // Park the local pointer in the middle of its monitor (moves are measured from there), hidden.
@@ -1047,6 +1130,7 @@ public class DeskViewForwarder
         alt = (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
         RemoteOwned = true;
         Interlocked.Increment(ref Switches);
+        if (Log != null) { var log = Log; string e = Edge; ThreadPool.QueueUserWorkItem(delegate { log("input: pointer and keyboard went to the other computer (" + e + " edge)"); }); }
         Enqueue("E " + Edge + " " + DvEdge.Along(Edge, x, y, d));
         clipToSend = true;
         if (!AcceptInjected)
@@ -1123,7 +1207,7 @@ public class DeskViewForwarder
             case "RS": int rs; if (p.Length > 1 && int.TryParse(p[1], out rs) && rs >= 1 && rs <= 10) SenderRestarts.Enqueue(rs); break;
             case "SR": if (p.Length > 1 && DvProto.IsScreenList(p[1])) RemoteScreenList = p[1]; break;
             case "P": break;
-            case "L": int a; if (p.Length > 1 && int.TryParse(p[1], out a)) ComeBack(Math.Max(0, Math.Min(65535, a))); break;
+            case "L": int a; if (p.Length > 1 && int.TryParse(p[1], out a)) { bool was = RemoteOwned; ComeBack(Math.Max(0, Math.Min(65535, a))); if (was && Log != null) Log("input: pointer and keyboard came back here"); } break;
             case "CB": clipIn = new StringBuilder(); break;
             case "CD": if (clipIn != null && p.Length > 1) { clipIn.Append(p[1]); if (clipIn.Length > MaxClipboardBytes / 3 * 4 + 8) clipIn = null; } break;
             case "CE":
@@ -1196,11 +1280,17 @@ public class DeskViewForwarder
                 bool altNow = tracked ? alt : (DvNative.GetAsyncKeyState(0xA4) & 0x8000) != 0;
                 // DeskView's own hotkeys (Ctrl+Alt+0..9 / D) are always handled here, on the machine you sit at,
                 // never forwarded - and keys that the engine injects from the other machine never count.
+                if (down) LocalInputWins(true);                         // typing here while the other machine drives: back here
                 if (HotkeysEnabled && ctrlNow && altNow && ((vk >= 0x30 && vk <= 0x39) || vk == 0x44))
                 {
                     if (down)
                     {
                         if (fwd) { Enqueue("K 162 29 0 0"); Enqueue("K 163 29 1 0"); Enqueue("K 164 56 0 0"); Enqueue("K 165 56 1 0"); }
+                        if (vk == 0x30 && Log != null)
+                        {
+                            var log = Log; bool ro = RemoteOwned, dr = DrivenByOther != null && DrivenByOther(), conn = Connected;
+                            ThreadPool.QueueUserWorkItem(delegate { log("input: Ctrl+Alt+0 pressed here (this computer was driving the other: " + ro + ", being driven: " + dr + ", linked: " + conn + ")"); });
+                        }
                         if (vk == 0x30) TakeBack();                     // Ctrl+Alt+0 always brings the pointer home
                         Interlocked.Exchange(ref pendingHotkey, vk);
                     }
