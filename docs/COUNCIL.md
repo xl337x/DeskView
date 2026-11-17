@@ -59,7 +59,7 @@ building a second product. No new council round before R1 and R2 ship.
 | 28 | Bridge that speaks the classic engine's protocol | Try the existing classic engine mode first (zero code). Build the bridge only where its admin service is blocked. Never accept input from it | DeskView already drives the real engine (`CoreControl.cs`, critic A) |
 | 29 | Cross-OS effort of 65-100 dev-days | Plan on 6-12 months of the owner's attention (+20% per critic A) | No mac/Linux machine in the QA loop (critic B) |
 | 30 | "Pointer acceleration applied twice" (OPEN-ISSUES) | Wrong. It is applied once, with the local curve. The real issue is feel and lost sub-pixel motion | input §1, critic |
-| 31 | Server described as "desktop, 3 monitors" | Wrong. It is a laptop-class PC using its panel, and one monitor hangs off a USB display adapter. Fix CLAUDE.md (shapes only) | critic §0 |
+| 31 | Server described as "desktop, 3 monitors" | Wrong. It is a laptop-class PC using its panel, and one monitor hangs off a USB display adapter. Fix AGENTS.md (shapes only) | critic §0 |
 
 ## 1. Architecture decision (per layer)
 

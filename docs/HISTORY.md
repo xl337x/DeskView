@@ -32,7 +32,7 @@ Newest last. Use it to understand intent behind the code ("why is it like this?"
    the classic engine". Both PCs switched to the built-in engine; proven: edge switching, typing, clipboard both
    ways, laptop controlling the server, files both ways. Latency found 400-650 ms -> player fix to ~170 ms
    (loopback); the real-link number is still to be re-measured (OPEN-ISSUES #1).
-10. Owner asked to make the repo a "brain" so a new Claude session understands everything: CLAUDE.md + docs.
+10. Owner asked to make the repo a "brain" so a new session understands everything: AGENTS.md + docs.
 
 ## Machine state when this was written
 - Both PCs: latest `main`, built-in engine (`InputEngine = DeskView`), DeskView running normally (no QA mode).

@@ -86,9 +86,9 @@ clipboard and security options, logs.
   computer can't be controlled by the built-in engine. Clipboard: text (send files by dragging them onto a picture).
 - Extra screens need a driver (installed by setup, needs administrator rights; often blocked on company PCs).
 
-## For developers (and for Claude Code)
+## For developers
 
-Start with [`CLAUDE.md`](CLAUDE.md), then [`docs/`](docs): architecture, every decision and why, the review
+Start with [`AGENTS.md`](AGENTS.md), then [`docs/`](docs): architecture, every decision and why, the review
 findings and verdicts, the QA log, open issues and ideas. Edit the `.cs` files and start `app\DeskView.ps1` -
 that's the whole build. All tests: `tests\run-all.ps1`. Releasing is pushing to `main`.
 
