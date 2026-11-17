@@ -390,6 +390,10 @@ public class DeskViewAgent
     /// <summary>Tells the other computer where this computer's shared screens are and how big.</summary>
     public void ReportScreens(string list) { Send("SR " + list); }
 
+    /// <summary>Server: tells the laptop which of ITS screens are on a monitor here right now ("2,4"; "" = none), so a
+    /// window that opens on an extra screen nobody shows can be brought where the person can see it.</summary>
+    public void ReportShown(string screens) { Send("SH " + (string.IsNullOrEmpty(screens) ? "-" : screens)); }
+
     volatile string edgeIn;                      // side the pointer came in from while the other machine drives it (null = not)
     readonly object driveLock = new object();    // edgeIn changes on the link thread and (GiveBack) from this computer's hooks
     long lastDrivenTicks;                        // when the other machine last moved, clicked or typed here
@@ -877,6 +881,9 @@ public class DeskViewForwarder
     // "" = off) and it continues on the other machine, with the keyboard; it comes back the same way.
     public volatile string Edge = "";
     public volatile bool RemoteOwned;                     // the pointer and keyboard are on the other machine now
+    /// <summary>Which of this computer's screens the other computer shows on a monitor ("2,4", "" = none; null = an
+    /// older server that doesn't say).</summary>
+    public volatile string ShownScreens;
     // This computer's other half (its agent), set by the app; tests leave them null (no change in behaviour).
     /// <summary>The other machine drives this computer right now.</summary>
     public Func<bool> DrivenByOther;
@@ -1356,6 +1363,7 @@ public class DeskViewForwarder
             case "V": int v; if (p.Length > 1 && int.TryParse(p[1], out v)) agentVersion = v; break;
             case "RS": int rs; if (p.Length > 1 && int.TryParse(p[1], out rs) && rs >= 1 && rs <= 10) SenderRestarts.Enqueue(rs); break;
             case "SR": if (p.Length > 1 && DvProto.IsScreenList(p[1])) RemoteScreenList = p[1]; break;
+            case "SH": ShownScreens = p.Length > 1 && System.Text.RegularExpressions.Regex.IsMatch(p[1], @"^[0-9,]{1,40}$") ? p[1] : ""; break;
             case "P": break;
             case "L": int a; if (p.Length > 1 && int.TryParse(p[1], out a)) { bool was = RemoteOwned; ComeBack(Math.Max(0, Math.Min(65535, a))); if (was && Log != null) Log("input: pointer and keyboard came back here"); } break;
             case "CB": clipIn = new StringBuilder(); break;

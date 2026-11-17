@@ -113,6 +113,38 @@ public static class DeskViewDisplays
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint flags);
 
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+
+    /// <summary>The window the person is using right now (foreground), if it is an ordinary window of another program:
+    /// its handle and the index of the screen its centre is on (-1 none).</summary>
+    public static int ForegroundScreen(System.Drawing.Rectangle[] screens, out IntPtr window)
+    {
+        SetThreadDpiAwarenessContext(new IntPtr(-4));
+        window = GetForegroundWindow();
+        var h = window;
+        if (h == IntPtr.Zero || !IsWindowVisible(h) || IsIconic(h)) return -1;
+        int ex = GetWindowLong(h, -20);
+        if ((ex & 0x80) != 0 || (ex & 0x08000000) != 0) return -1;
+        uint pid; GetWindowThreadProcessId(h, out pid); if (pid == (uint)System.Diagnostics.Process.GetCurrentProcess().Id) return -1;
+        RECT r; if (!GetWindowRect(h, out r)) return -1;
+        int cx = (r.L + r.R) / 2, cy = (r.T + r.B) / 2;
+        for (int i = 0; i < screens.Length; i++) if (screens[i].Contains(cx, cy)) return i;
+        return -1;
+    }
+
+    /// <summary>One window onto "home" (same size when it fits, maximized stays maximized), without taking focus.</summary>
+    public static bool BringWindowHome(IntPtr h, System.Drawing.Rectangle home)
+    {
+        SetThreadDpiAwarenessContext(new IntPtr(-4));
+        bool max = IsZoomed(h);
+        if (max) ShowWindow(h, 4);
+        RECT r; if (!GetWindowRect(h, out r)) return false;
+        int w = Math.Min(r.R - r.L, home.Width), hh = Math.Min(r.B - r.T, home.Height);
+        bool ok = SetWindowPos(h, IntPtr.Zero, home.Left + (home.Width - w) / 2, home.Top + (home.Height - hh) / 2, w, hh, 0x0004 | 0x0010);
+        if (max) ShowWindow(h, 3);
+        return ok;
+    }
+
     /// <summary>"All back": every ordinary window whose centre is on one of the "from" screens (the extra screens) is
     /// moved onto "home" (this computer's own screen) - same size when it fits, maximized ones maximized there,
     /// staggered a little so they don't hide each other. The user never has to hunt for a window on a screen

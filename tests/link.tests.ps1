@@ -156,6 +156,11 @@ try {
     Check 'no crossed control: the edge does nothing while this computer is being driven' (-not $fw.TryEnter(1919, 300) -and -not $fw.RemoteOwned)
     $fw.DrivenRecently = $null
     $sw = $agent.Switches
+    # the server tells the laptop which of its screens are on a monitor (a window on a hidden one is brought home)
+    $agent.ReportShown('2,4')
+    Check 'shown screens reach the laptop ("SH 2,4")' (WaitFor { $fw.ShownScreens -eq '2,4' }) "'$($fw.ShownScreens)'"
+    $agent.ReportShown('')
+    Check 'shown screens: none' (WaitFor { $fw.ShownScreens -eq '' }) "'$($fw.ShownScreens)'"
     Check 'touching the right edge switches to the other machine' ($fw.TryEnter(1919, 300) -and $fw.RemoteOwned)
     Check 'the other machine gets the pointer at the matching height' (WaitFor { $agent.Switches -gt $sw -and $io.X -eq 1 }) "$($io.X),$($io.Y)"
     $enq = [DeskViewForwarder].GetMethod('Enqueue', [Reflection.BindingFlags]'NonPublic,Instance', $null, [Type[]]@([string]), $null)

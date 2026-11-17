@@ -441,8 +441,47 @@ namespace DeskView
         string lastScreensSent; DateTime lastScreensAt = DateTime.MinValue;
 
         /// <summary>Server: tell the client where this computer's screens are (it shows them, with Ctrl+Alt+1..9).</summary>
+        string lastShownSent; DateTime lastShownAt = DateTime.MinValue;
+        void ReportShownToClient()
+        {
+            if (S.Role != Role.Server || string.IsNullOrEmpty(agent.Client)) { lastShownSent = null; return; }
+            var shown = string.Join(",", S.Screens.Values.Where(v => v > 0).Distinct().OrderBy(v => v).Select(v => v.ToString()).ToArray());
+            if (shown == lastShownSent && (DateTime.Now - lastShownAt).TotalSeconds < 5) return;
+            lastShownSent = shown; lastShownAt = DateTime.Now;
+            agent.ReportShown(shown);
+        }
+
+        // Laptop: a window the person brings up (taskbar, Alt+Tab, a notification) that sits on an extra screen no
+        // monitor shows is moved onto this computer's own screen - seen live: Teams opened on a hidden extra screen
+        // and could not be reached. Not during a drag, not while the other computer drives this one, and only after
+        // it stayed there 1.5 s (a window just dragged there is shown by smart screens within that time).
+        IntPtr strandedWin = IntPtr.Zero; DateTime strandedSince;
+        void RescueStranded()
+        {
+            if (S.Role != Role.Client || !forwarder.Connected) { strandedWin = IntPtr.Zero; return; }
+            var shownList = forwarder.ShownScreens;
+            if (shownList == null) return;                                       // an older server: it doesn't say what it shows
+            var screens = Tools.SharedScreens();
+            var rects = screens.Select(x => x.Bounds).ToArray();
+            IntPtr w; int i = DeskViewDisplays.ForegroundScreen(rects, out w);
+            var virt = new HashSet<string>(DeskViewDisplays.VirtualScreens(), StringComparer.OrdinalIgnoreCase);
+            bool stranded = i >= 1 && virt.Contains(screens[i].DeviceName) && !shownList.Split(',').Contains((i + 1).ToString())
+                && DeskViewDisplays.DragScreen(rects) < 0 && !agent.DrivenRecently;
+            if (!stranded) { strandedWin = IntPtr.Zero; return; }
+            if (w != strandedWin) { strandedWin = w; strandedSince = DateTime.Now; return; }
+            if ((DateTime.Now - strandedSince).TotalSeconds < 1.5) return;
+            strandedWin = IntPtr.Zero;
+            var home = Screen.PrimaryScreen.WorkingArea;
+            if (DeskViewDisplays.BringWindowHome(w, home))
+            {
+                Log.Write("window brought here: it was on extra screen " + (i + 1) + ", which no monitor of the other computer shows");
+                SayOn(Screen.PrimaryScreen.Bounds, "That window was on extra screen " + (i + 1) + " (not shown anywhere) - moved here", 2.5);
+            }
+        }
+
         void ReportScreensToClient()
         {
+            ReportShownToClient();
             if (S.Role != Role.Server || string.IsNullOrEmpty(agent.Client)) { lastScreensSent = null; return; }
             var list = ScreenList(Tools.SharedScreens());
             if (list == lastScreensSent && (DateTime.Now - lastScreensAt).TotalSeconds < 10) return;
@@ -724,6 +763,7 @@ namespace DeskView
                 ServiceFiles();
                 ServiceToast();
                 ReportOccupied();
+                RescueStranded();
                 ReportScreensToClient();
                 ServiceSmartScreens();
                 int restart;

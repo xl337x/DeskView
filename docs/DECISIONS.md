@@ -186,3 +186,12 @@ the code independently and one judge verifying each claim against the code (two 
   as holding a window (`DeskViewDisplays.DragScreen`), checked every 0.2 s while dragging (0.5 s otherwise): never
   given back mid-drag, and the picture starts as soon as the drag reaches a screen.
 - C (picture ready before the drop, senders not restarted per viewer) waits for the council.
+
+## A window on a hidden extra screen is brought where it can be seen
+- Seen live: Teams opened on the laptop's extra screen 3, which was given back (smart screens leave a given-back
+  screen alone while it holds windows), so it was on no monitor at all and could not be used.
+- The server now tells the laptop which of its screens are on a monitor ("SH 2,4", over the same link as "SR"). On the
+  laptop, a foreground window (taskbar, Alt+Tab, a notification) centred on an extra screen nobody shows, for 1.5 s,
+  not during a drag and not while the server drives the laptop, is moved onto the laptop's own screen
+  (`DeskViewDisplays.BringWindowHome`), with a log line and a note on screen. An older server sends no "SH": nothing
+  is moved then.

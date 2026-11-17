@@ -172,6 +172,10 @@ if ($hw -ne [IntPtr]::Zero) {
     Start-Sleep -Milliseconds 300
     $r1 = New-Object System.Drawing.Rectangle; [void][DVQA.W]::GetWindowRect($hw, [ref]$r1)
     Check 'all back: the window on the extra screen moves onto this computer''s own screen, same size' ($moved -eq 1 -and $homeRect.Contains($r1.X, $r1.Y) -and $homeRect.Contains($r1.Width - 1, $r1.Height - 1) -and ($r1.Width - $r1.X) -eq ($r0.Width - $r0.X)) "moved=$moved at $($r1.X),$($r1.Y)"
+    $other = New-Object System.Drawing.Rectangle ($pb.Left + 900), ($pb.Top + 200), 700, 500
+    $okOne = [DeskViewDisplays]::BringWindowHome($hw, $other); Start-Sleep -Milliseconds 300
+    $r2 = New-Object System.Drawing.Rectangle; [void][DVQA.W]::GetWindowRect($hw, [ref]$r2)
+    Check 'a window brought home on its own (stranded on a hidden screen) lands on the given screen, same size' ($okOne -and $other.Contains($r2.X, $r2.Y) -and ($r2.Width - $r2.X) -eq ($r0.Width - $r0.X)) "at $($r2.X),$($r2.Y)"
     Check 'all back: nothing else moves (no window centre on an empty spot)' (([DeskViewDisplays]::BringWindowsHome(@((New-Object System.Drawing.Rectangle -30000, -30000, 4, 4)), $homeRect)) -eq 0)
 }
 try { $child.Kill() } catch { }
